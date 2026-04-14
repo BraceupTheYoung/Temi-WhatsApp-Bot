@@ -1,0 +1,34 @@
+2026/04/14-15:35:55.014 7f40 Reusing MANIFEST C:\Users\ADMIN\Documents\whatsapp aibot\session2\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/14-15:35:55.015 7f40 Recovering log #22
+2026/04/14-15:35:55.121 7f40 Reusing old log C:\Users\ADMIN\Documents\whatsapp aibot\session2\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000022.log 
+2026/04/14-15:36:09.739 6be4 Level-0 table #28: started
+2026/04/14-15:36:09.833 6be4 Level-0 table #28: 1159546 bytes OK
+2026/04/14-15:36:09.838 6be4 Delete type=0 #22
+2026/04/14-15:36:09.848 6be4 Compacting 1@1 + 2@2 files
+2026/04/14-15:36:10.171 6be4 Generated table #29@1: 47745 keys, 2211342 bytes
+2026/04/14-15:36:10.235 6be4 Generated table #30@1: 11243 keys, 439745 bytes
+2026/04/14-15:36:10.237 6be4 Compacted 1@1 + 2@2 files => 2651087 bytes
+2026/04/14-15:36:10.239 6be4 compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/04/14-15:36:10.804 7f40 Level-0 table #32: started
+2026/04/14-15:36:10.900 7f40 Level-0 table #32: 1015137 bytes OK
+2026/04/14-15:36:10.906 7f40 Delete type=2 #24
+2026/04/14-15:36:10.906 7f40 Delete type=2 #25
+2026/04/14-15:36:10.906 7f40 Delete type=0 #27
+2026/04/14-15:36:10.906 7f40 Delete type=2 #28
+2026/04/14-15:36:27.685 6be4 Compacting 1@1 + 1@2 files
+2026/04/14-15:36:27.836 6be4 Generated table #33@1: 46040 keys, 2144515 bytes
+2026/04/14-15:36:27.836 6be4 Compacted 1@1 + 1@2 files => 2144515 bytes
+2026/04/14-15:36:27.838 6be4 compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/04/14-15:36:27.838 6be4 Delete type=2 #29
+2026/04/14-15:36:27.839 6be4 Delete type=2 #32
+2026/04/14-15:37:58.349 6be4 Level-0 table #35: started
+2026/04/14-15:37:58.444 6be4 Level-0 table #35: 1473657 bytes OK
+2026/04/14-15:37:58.447 6be4 Delete type=0 #31
+2026/04/14-15:38:00.329 931c Compacting 1@1 + 2@2 files
+2026/04/14-15:38:01.113 931c Generated table #36@1: 47169 keys, 2221692 bytes
+2026/04/14-15:38:01.283 931c Generated table #37@1: 12287 keys, 559772 bytes
+2026/04/14-15:38:01.283 931c Compacted 1@1 + 2@2 files => 2781464 bytes
+2026/04/14-15:38:01.287 931c compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/04/14-15:38:01.288 931c Delete type=2 #30
+2026/04/14-15:38:01.289 931c Delete type=2 #33
+2026/04/14-15:38:01.290 931c Delete type=2 #35

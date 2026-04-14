@@ -1,0 +1,25 @@
+2026/04/14-15:49:52.885 634c Reusing MANIFEST C:\Users\ADMIN\Documents\whatsapp aibot\session2\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/MANIFEST-000001
+2026/04/14-15:49:52.887 634c Recovering log #34
+2026/04/14-15:49:53.196 634c Reusing old log C:\Users\ADMIN\Documents\whatsapp aibot\session2\session\Default\IndexedDB\https_web.whatsapp.com_0.indexeddb.leveldb/000034.log 
+2026/04/14-15:51:28.270 8910 Level-0 table #40: started
+2026/04/14-15:51:28.357 8910 Level-0 table #40: 1322702 bytes OK
+2026/04/14-15:51:28.364 8910 Delete type=0 #34
+2026/04/14-15:51:28.817 8910 Compacting 1@1 + 2@2 files
+2026/04/14-15:51:29.196 8910 Generated table #41@1: 49058 keys, 2221336 bytes
+2026/04/14-15:51:29.303 8910 Generated table #42@1: 14143 keys, 766269 bytes
+2026/04/14-15:51:29.304 8910 Compacted 1@1 + 2@2 files => 2987605 bytes
+2026/04/14-15:51:29.308 8910 compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/04/14-15:52:00.133 8910 Level-0 table #44: started
+2026/04/14-15:52:00.245 8910 Level-0 table #44: 1213937 bytes OK
+2026/04/14-15:52:00.250 8910 Delete type=2 #36
+2026/04/14-15:52:00.250 8910 Delete type=2 #37
+2026/04/14-15:52:00.250 8910 Delete type=0 #39
+2026/04/14-15:52:00.250 8910 Delete type=2 #40
+2026/04/14-15:52:00.264 8910 Compacting 1@1 + 2@2 files
+2026/04/14-15:52:00.551 8910 Generated table #45@1: 49035 keys, 2222052 bytes
+2026/04/14-15:52:00.632 8910 Generated table #46@1: 16063 keys, 891498 bytes
+2026/04/14-15:52:00.633 8910 Compacted 1@1 + 2@2 files => 3113550 bytes
+2026/04/14-15:52:00.637 8910 compacted to: files[ 0 0 2 0 0 0 0 ]
+2026/04/14-15:52:00.638 8910 Delete type=2 #41
+2026/04/14-15:52:00.639 8910 Delete type=2 #42
+2026/04/14-15:52:00.639 8910 Delete type=2 #44
