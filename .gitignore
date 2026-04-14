@@ -1,0 +1,7 @@
+.env
+node_modules/
+.wwebjs_auth/
+.wwebjs_cache/
+session2/
+*.json
+!package.json

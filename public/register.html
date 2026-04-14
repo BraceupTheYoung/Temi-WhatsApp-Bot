@@ -1,0 +1,743 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Teacher Registration</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background: #f0f2f5;
+      min-height: 100vh;
+      color: #1a1a1a;
+    }
+
+    .header {
+      background: #075e54;
+      color: white;
+      padding: 16px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    }
+
+    .header h1 {
+      font-size: 18px;
+      font-weight: 600;
+      letter-spacing: -0.3px;
+    }
+
+    .header-icon {
+      font-size: 22px;
+    }
+
+    .form-container {
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 20px 16px 40px;
+    }
+
+    .welcome-card {
+      background: white;
+      border-radius: 16px;
+      padding: 28px 24px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      text-align: center;
+    }
+
+    .welcome-card .emoji {
+      font-size: 48px;
+      margin-bottom: 12px;
+    }
+
+    .welcome-card h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: #075e54;
+      margin-bottom: 8px;
+    }
+
+    .welcome-card p {
+      font-size: 14px;
+      color: #667781;
+      line-height: 1.5;
+    }
+
+    .form-card {
+      background: white;
+      border-radius: 16px;
+      padding: 24px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+    }
+
+    .form-section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #075e54;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #e8f5e9;
+    }
+
+    .form-group {
+      margin-bottom: 20px;
+    }
+
+    .form-group label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      color: #3b4a54;
+      margin-bottom: 6px;
+    }
+
+    .form-group label .required {
+      color: #e53935;
+      margin-left: 2px;
+    }
+
+    .form-group input[type="text"],
+    .form-group input[type="email"],
+    .form-group select {
+      width: 100%;
+      padding: 12px 16px;
+      border: 1.5px solid #d1d7db;
+      border-radius: 10px;
+      font-size: 15px;
+      font-family: 'Inter', sans-serif;
+      color: #1a1a1a;
+      background: #fafafa;
+      transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+      outline: none;
+      -webkit-appearance: none;
+    }
+
+    .form-group input:focus,
+    .form-group select:focus {
+      border-color: #25d366;
+      box-shadow: 0 0 0 3px rgba(37, 211, 102, 0.15);
+      background: white;
+    }
+
+    .form-group input::placeholder {
+      color: #a0aeb6;
+    }
+
+    .form-group select {
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%23667781' d='M6 8.825L.35 3.175l.825-.825L6 7.175l4.825-4.825.825.825z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 14px center;
+      padding-right: 36px;
+    }
+
+    .checkbox-group {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .checkbox-item {
+      display: flex;
+      align-items: center;
+      padding: 10px 14px;
+      border: 1.5px solid #d1d7db;
+      border-radius: 10px;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fafafa;
+    }
+
+    .checkbox-item:hover {
+      border-color: #25d366;
+      background: #f0faf4;
+    }
+
+    .checkbox-item.selected {
+      border-color: #25d366;
+      background: #e8f5e9;
+    }
+
+    .checkbox-item input[type="checkbox"] {
+      display: none;
+    }
+
+    .checkbox-item .check-icon {
+      width: 20px;
+      height: 20px;
+      border: 2px solid #d1d7db;
+      border-radius: 4px;
+      margin-right: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+      flex-shrink: 0;
+    }
+
+    .checkbox-item.selected .check-icon {
+      background: #25d366;
+      border-color: #25d366;
+    }
+
+    .checkbox-item.selected .check-icon::after {
+      content: '✓';
+      color: white;
+      font-size: 12px;
+      font-weight: bold;
+    }
+
+    .checkbox-item span {
+      font-size: 14px;
+      color: #3b4a54;
+    }
+
+    .radio-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .radio-item {
+      flex: 1;
+      min-width: 80px;
+      padding: 10px 14px;
+      border: 1.5px solid #d1d7db;
+      border-radius: 10px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      background: #fafafa;
+      font-size: 14px;
+      color: #3b4a54;
+    }
+
+    .radio-item:hover {
+      border-color: #25d366;
+      background: #f0faf4;
+    }
+
+    .radio-item.selected {
+      border-color: #25d366;
+      background: #25d366;
+      color: white;
+      font-weight: 600;
+    }
+
+    .radio-item input[type="radio"] {
+      display: none;
+    }
+
+    .terms-section {
+      background: #f8f9fa;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 20px;
+    }
+
+    .terms-section p {
+      font-size: 13px;
+      color: #667781;
+      line-height: 1.6;
+      margin-bottom: 12px;
+    }
+
+    .terms-check {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      cursor: pointer;
+    }
+
+    .terms-check input[type="checkbox"] {
+      margin-top: 2px;
+      width: 18px;
+      height: 18px;
+      accent-color: #25d366;
+      flex-shrink: 0;
+    }
+
+    .terms-check label {
+      font-size: 13px;
+      color: #3b4a54;
+      line-height: 1.4;
+      cursor: pointer;
+    }
+
+    .divider {
+      height: 1px;
+      background: #e8ecef;
+      margin: 24px 0;
+    }
+
+    .submit-btn {
+      width: 100%;
+      padding: 14px;
+      background: #25d366;
+      color: white;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 600;
+      font-family: 'Inter', sans-serif;
+      cursor: pointer;
+      transition: all 0.3s;
+      box-shadow: 0 4px 12px rgba(37, 211, 102, 0.3);
+      letter-spacing: 0.3px;
+    }
+
+    .submit-btn:hover {
+      background: #1da855;
+      box-shadow: 0 6px 16px rgba(37, 211, 102, 0.4);
+      transform: translateY(-1px);
+    }
+
+    .submit-btn:active {
+      transform: translateY(0);
+    }
+
+    .submit-btn:disabled {
+      background: #a0aeb6;
+      box-shadow: none;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .error-msg {
+      color: #e53935;
+      font-size: 12px;
+      margin-top: 4px;
+      display: none;
+    }
+
+    .error-msg.show {
+      display: block;
+    }
+
+    /* Success page */
+    .success-container {
+      display: none;
+      text-align: center;
+      padding: 60px 24px;
+    }
+
+    .success-container.show {
+      display: block;
+    }
+
+    .success-icon {
+      width: 80px;
+      height: 80px;
+      background: #25d366;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 24px;
+      animation: scaleIn 0.5s ease;
+    }
+
+    .success-icon::after {
+      content: '✓';
+      color: white;
+      font-size: 40px;
+      font-weight: bold;
+    }
+
+    @keyframes scaleIn {
+      0% { transform: scale(0); opacity: 0; }
+      50% { transform: scale(1.2); }
+      100% { transform: scale(1); opacity: 1; }
+    }
+
+    .success-container h2 {
+      font-size: 24px;
+      color: #075e54;
+      margin-bottom: 12px;
+    }
+
+    .success-container p {
+      font-size: 15px;
+      color: #667781;
+      line-height: 1.6;
+    }
+
+    .loading-overlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(255,255,255,0.85);
+      z-index: 200;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+    }
+
+    .loading-overlay.show {
+      display: flex;
+    }
+
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #e8ecef;
+      border-top-color: #25d366;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-overlay p {
+      margin-top: 16px;
+      font-size: 14px;
+      color: #667781;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <span class="header-icon">📚</span>
+    <h1>Teacher Registration</h1>
+    <span class="header-icon">📋</span>
+  </div>
+
+  <div class="form-container" id="formContainer">
+    <div class="welcome-card">
+      <div class="emoji">👩‍🏫</div>
+      <h2>Welcome!</h2>
+      <p>Please provide your details below to access teaching resources and support.</p>
+    </div>
+
+    <form id="registrationForm" class="form-card" novalidate>
+      <!-- Personal Info -->
+      <div class="form-section-title">Personal Information</div>
+
+      <div class="form-group">
+        <label>First Name <span class="required">*</span></label>
+        <input type="text" id="firstName" name="firstName" placeholder="Enter your first name" required>
+        <div class="error-msg" id="firstNameError">Please enter your first name</div>
+      </div>
+
+      <div class="form-group">
+        <label>Last Name <span class="required">*</span></label>
+        <input type="text" id="lastName" name="lastName" placeholder="Enter your last name" required>
+        <div class="error-msg" id="lastNameError">Please enter your last name</div>
+      </div>
+
+      <div class="form-group">
+        <label>Email Address</label>
+        <input type="email" id="email" name="email" placeholder="Enter your email (optional)">
+        <div class="error-msg" id="emailError">Please enter a valid email address</div>
+      </div>
+
+      <div class="form-group">
+        <label>Gender <span class="required">*</span></label>
+        <div class="radio-group" id="genderGroup">
+          <div class="radio-item" onclick="selectRadio(this, 'gender')">
+            <input type="radio" name="gender" value="Female"> Female
+          </div>
+          <div class="radio-item" onclick="selectRadio(this, 'gender')">
+            <input type="radio" name="gender" value="Male"> Male
+          </div>
+          <div class="radio-item" onclick="selectRadio(this, 'gender')">
+            <input type="radio" name="gender" value="Prefer not to say"> Other
+          </div>
+        </div>
+        <div class="error-msg" id="genderError">Please select your gender</div>
+      </div>
+
+      <div class="form-group">
+        <label>Age Range <span class="required">*</span></label>
+        <select id="age" name="age" required>
+          <option value="" disabled selected>Select your age range</option>
+          <option value="18-24">18-24</option>
+          <option value="25-34">25-34</option>
+          <option value="35-44">35-44</option>
+          <option value="45-54">45-54</option>
+          <option value="55+">55+</option>
+        </select>
+        <div class="error-msg" id="ageError">Please select your age range</div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Location & School -->
+      <div class="form-section-title">Location & School</div>
+
+      <div class="form-group">
+        <label>State / Province <span class="required">*</span></label>
+        <select id="province" name="province" required>
+          <option value="" disabled selected>Select your state</option>
+          <option value="Lagos">Lagos</option>
+          <option value="Kano">Kano</option>
+          <option value="Ogun">Ogun</option>
+          <option value="Oyo">Oyo</option>
+          <option value="Kaduna">Kaduna</option>
+          <option value="Rivers">Rivers</option>
+          <option value="Katsina">Katsina</option>
+          <option value="Bauchi">Bauchi</option>
+          <option value="Anambra">Anambra</option>
+          <option value="Jigawa">Jigawa</option>
+          <option value="Benue">Benue</option>
+        </select>
+        <div class="error-msg" id="provinceError">Please select your state</div>
+      </div>
+
+      <div class="form-group">
+        <label>School Name</label>
+        <input type="text" id="schoolName" name="schoolName" placeholder="Enter your school name">
+      </div>
+
+      <div class="form-group">
+        <label>Community Type <span class="required">*</span></label>
+        <div class="radio-group" id="communityGroup">
+          <div class="radio-item" onclick="selectRadio(this, 'community')">
+            <input type="radio" name="community" value="Rural"> Rural
+          </div>
+          <div class="radio-item" onclick="selectRadio(this, 'community')">
+            <input type="radio" name="community" value="Urban"> Urban
+          </div>
+          <div class="radio-item" onclick="selectRadio(this, 'community')">
+            <input type="radio" name="community" value="Township"> Township
+          </div>
+        </div>
+        <div class="error-msg" id="communityError">Please select your community type</div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Teaching Details -->
+      <div class="form-section-title">Teaching Details</div>
+
+      <div class="form-group">
+        <label>Language <span class="required">*</span></label>
+        <select id="language" name="language" required>
+          <option value="" disabled selected>Select your language</option>
+          <option value="English">English</option>
+          <option value="isiZulu">isiZulu</option>
+          <option value="isiXhosa">isiXhosa</option>
+          <option value="Afrikaans">Afrikaans</option>
+          <option value="Yoruba">Yoruba</option>
+          <option value="Igbo">Igbo</option>
+          <option value="Hausa">Hausa</option>
+          <option value="Other">Other</option>
+        </select>
+        <div class="error-msg" id="languageError">Please select your language</div>
+      </div>
+
+      <div class="form-group">
+        <label>Job Role <span class="required">*</span></label>
+        <select id="jobRole" name="jobRole" required>
+          <option value="" disabled selected>Select your role</option>
+          <option value="Teacher">Teacher</option>
+          <option value="Teacher's Assistant">Teacher's Assistant</option>
+          <option value="School Administrator">School Administrator</option>
+          <option value="Education Stakeholder">Education Stakeholder</option>
+        </select>
+        <div class="error-msg" id="jobRoleError">Please select your job role</div>
+      </div>
+
+      <div class="form-group">
+        <label>Grades You Teach <span style="font-weight:400;color:#667781">(select all that apply)</span></label>
+        <div class="checkbox-group" id="gradesGroup">
+          <label class="checkbox-item" onclick="toggleCheckbox(this)">
+            <input type="checkbox" name="grades" value="Grade 1">
+            <span class="check-icon"></span>
+            <span>Grade 1</span>
+          </label>
+          <label class="checkbox-item" onclick="toggleCheckbox(this)">
+            <input type="checkbox" name="grades" value="Grade 2">
+            <span class="check-icon"></span>
+            <span>Grade 2</span>
+          </label>
+          <label class="checkbox-item" onclick="toggleCheckbox(this)">
+            <input type="checkbox" name="grades" value="Grade 3">
+            <span class="check-icon"></span>
+            <span>Grade 3</span>
+          </label>
+          <label class="checkbox-item" onclick="toggleCheckbox(this)">
+            <input type="checkbox" name="grades" value="Grade 4">
+            <span class="check-icon"></span>
+            <span>Grade 4</span>
+          </label>
+          <label class="checkbox-item" onclick="toggleCheckbox(this)">
+            <input type="checkbox" name="grades" value="Grade 5">
+            <span class="check-icon"></span>
+            <span>Grade 5</span>
+          </label>
+          <label class="checkbox-item" onclick="toggleCheckbox(this)">
+            <input type="checkbox" name="grades" value="Grade 6">
+            <span class="check-icon"></span>
+            <span>Grade 6</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Terms -->
+      <div class="terms-section">
+        <p>By submitting, you agree to our <strong>Terms and Conditions</strong> and <strong>Privacy Policy</strong>. We may contact you in the future with teaching resources and updates.</p>
+        <div class="terms-check">
+          <input type="checkbox" id="termsAgree" name="termsAgree" required>
+          <label for="termsAgree">I agree to the Terms and Conditions <span class="required">*</span></label>
+        </div>
+        <div class="error-msg" id="termsError">You must agree to the terms to continue</div>
+      </div>
+
+      <button type="submit" class="submit-btn" id="submitBtn">Submit Registration</button>
+    </form>
+  </div>
+
+  <!-- Success Page -->
+  <div class="success-container" id="successPage">
+    <div class="success-icon"></div>
+    <h2>Registration Complete! 🎉</h2>
+    <p>Thank you for registering! You can now close this page and return to WhatsApp. The bot will send you a welcome message shortly.</p>
+  </div>
+
+  <!-- Loading Overlay -->
+  <div class="loading-overlay" id="loadingOverlay">
+    <div class="spinner"></div>
+    <p>Submitting your details...</p>
+  </div>
+
+  <script>
+    function selectRadio(element, groupName) {
+      const group = element.parentElement;
+      group.querySelectorAll('.radio-item').forEach(item => item.classList.remove('selected'));
+      element.classList.add('selected');
+      element.querySelector('input[type="radio"]').checked = true;
+    }
+
+    function toggleCheckbox(element) {
+      const checkbox = element.querySelector('input[type="checkbox"]');
+      checkbox.checked = !checkbox.checked;
+      element.classList.toggle('selected', checkbox.checked);
+    }
+
+    function validateForm() {
+      let valid = true;
+
+      // Reset errors
+      document.querySelectorAll('.error-msg').forEach(e => e.classList.remove('show'));
+
+      const requiredFields = [
+        { id: 'firstName', error: 'firstNameError' },
+        { id: 'lastName', error: 'lastNameError' },
+        { id: 'age', error: 'ageError' },
+        { id: 'province', error: 'provinceError' },
+        { id: 'language', error: 'languageError' },
+        { id: 'jobRole', error: 'jobRoleError' }
+      ];
+
+      for (const field of requiredFields) {
+        const el = document.getElementById(field.id);
+        if (!el.value.trim()) {
+          document.getElementById(field.error).classList.add('show');
+          if (valid) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          valid = false;
+        }
+      }
+
+      // Email validation (only if filled)
+      const email = document.getElementById('email').value.trim();
+      if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        document.getElementById('emailError').classList.add('show');
+        valid = false;
+      }
+
+      // Radio groups
+      const radioGroups = [
+        { name: 'gender', error: 'genderError' },
+        { name: 'community', error: 'communityError' }
+      ];
+
+      for (const group of radioGroups) {
+        if (!document.querySelector(`input[name="${group.name}"]:checked`)) {
+          document.getElementById(group.error).classList.add('show');
+          valid = false;
+        }
+      }
+
+      // Terms
+      if (!document.getElementById('termsAgree').checked) {
+        document.getElementById('termsError').classList.add('show');
+        valid = false;
+      }
+
+      return valid;
+    }
+
+    document.getElementById('registrationForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      if (!validateForm()) return;
+
+      const loadingOverlay = document.getElementById('loadingOverlay');
+      const submitBtn = document.getElementById('submitBtn');
+
+      loadingOverlay.classList.add('show');
+      submitBtn.disabled = true;
+
+      // Collect grades
+      const grades = [];
+      document.querySelectorAll('input[name="grades"]:checked').forEach(cb => {
+        grades.push(cb.value);
+      });
+
+      const formData = {
+        firstName: document.getElementById('firstName').value.trim(),
+        lastName: document.getElementById('lastName').value.trim(),
+        email: document.getElementById('email').value.trim() || null,
+        gender: document.querySelector('input[name="gender"]:checked')?.value,
+        age: document.getElementById('age').value,
+        province: document.getElementById('province').value,
+        schoolName: document.getElementById('schoolName').value.trim() || null,
+        community: document.querySelector('input[name="community"]:checked')?.value,
+        language: document.getElementById('language').value,
+        jobRole: document.getElementById('jobRole').value,
+        grades: grades,
+        agreedToTerms: true
+      };
+
+      try {
+        const response = await fetch(window.location.pathname, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(formData)
+        });
+
+        if (response.ok) {
+          document.getElementById('formContainer').style.display = 'none';
+          document.getElementById('successPage').classList.add('show');
+        } else {
+          const error = await response.json();
+          alert(error.message || 'Something went wrong. Please try again.');
+        }
+      } catch (err) {
+        alert('Network error. Please check your connection and try again.');
+      } finally {
+        loadingOverlay.classList.remove('show');
+        submitBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>
