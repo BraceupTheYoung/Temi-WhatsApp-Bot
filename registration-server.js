@@ -3,7 +3,7 @@ const path = require("path");
 
 let onRegistrationComplete = null; // Callback set by teacher-bot.js
 
-function createRegistrationServer(port = 3000) {
+function createRegistrationServer(port = process.env.PORT || 3000) {
   const app = express();
 
   app.use(express.json());
