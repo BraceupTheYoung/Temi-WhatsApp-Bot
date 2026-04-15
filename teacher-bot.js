@@ -12,7 +12,6 @@ const MEDIA_DIR = path.join(__dirname, "media");
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: "session2",
-    restartOnAuthFail: true,
   }),
   puppeteer: {
     headless: true,
@@ -972,6 +971,7 @@ client.on("ready", () => {
 client.on("message", async (message) => {
   try {
     if (message.from === "status@broadcast" || message.fromMe) return;
+    if (message.isGroup) return;
     
     const userId = message.from;
     const userInput = message.body.trim().toLowerCase();
@@ -1032,7 +1032,9 @@ client.on("message", async (message) => {
     
     switch (state.stage) {
       case STAGES.NEW:
-        await handleNewUser(message);
+        if (userInput === "hello temi") {
+          await handleNewUser(message);
+        }
         break;
         
       case STAGES.WELCOME:
@@ -1073,7 +1075,6 @@ client.on("message", async (message) => {
         
       default:
         console.log("Unknown stage:", state.stage);
-        await handleNewUser(message);
     }
     
   } catch (error) {
