@@ -900,7 +900,7 @@ const handleCompleted = async (message) => {
     return;
   }
   
-  // Handle "done" / "certificate" - show certificate
+  // Handle "done" / "certificate" - request certificate details
   if (userInput === "done" || userInput === "certificate" || userInput === "cert") {
     const moduleId = state.currentModule?.id;
     const quizScore = usersDB[userId]?.progress[state.currentTopic]?.modules[moduleId]?.quizScore || 0;
@@ -910,13 +910,37 @@ const handleCompleted = async (message) => {
       return;
     }
     
-    const userName = usersDB[userId]?.fullName || usersDB[userId]?.name || "Teacher";
-    const certMediaPath = path.join(MEDIA_DIR, "chatgpt-certificate.jpeg");
-    if (fs.existsSync(certMediaPath)) {
-      const certMedia = await MessageMedia.fromFilePath(certMediaPath);
-      await message.reply(certMedia, undefined, { caption: completion.certificate.replace("{name}", userName) });
+    // Ask for certificate details (name, email)
+    state.stage = "CERT_REQUEST";
+    await message.reply(`📝 *Certificate Request*\n\nTo prepare your Certificate of Completion, please reply with:\n\n1. Your FULL NAME (as you want it on the certificate)\n2. Your EMAIL ADDRESS (where we will send your certificate)\n\nExample: *John Smith, john@email.com*`);
+    return;
+  }
+  
+  // Handle certificate request - store name and email
+  if (state.stage === "CERT_REQUEST") {
+    const input = message.body.trim();
+    const certParts = input.split(/,|and|;/).map(s => s.trim());
+    
+    if (certParts.length >= 2) {
+      const certName = certParts[0];
+      const certEmail = certParts[1];
+      
+      if (!usersDB[userId].certificateRequests) {
+        usersDB[userId].certificateRequests = [];
+      }
+      usersDB[userId].certificateRequests.push({
+        name: certName,
+        email: certEmail,
+        date: new Date().toISOString()
+      });
+      saveData();
+      
+      // Reset stage to COMPLETED so user can continue course
+      state.stage = STAGES.COMPLETED;
+      
+      await message.reply(`✅ *Certificate Request Confirmed!*\n\nName: ${certName}\nEmail: ${certEmail}\n\nYour certificate will be prepared and sent to you manually! 📧\n\n─────────────────────────────────\n\nReply *NEXT TOOL* to continue to the next module ➡️\nReply *MENU* to go back to the main menu 🏠`);
     } else {
-      await message.reply(completion.certificate.replace("{name}", userName));
+      await message.reply(`Please provide both your name and email in the format: *Name, email@example.com*\n\nExample: *John Smith, john@email.com*`);
     }
     return;
   }
