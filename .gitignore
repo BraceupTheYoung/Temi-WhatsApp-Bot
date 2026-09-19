@@ -2,5 +2,8 @@
 node_modules/
 .wwebjs_auth/
 .wwebjs_cache/
+session2/
+session2_backup*/
+certificates/
 *.json
 !package.json

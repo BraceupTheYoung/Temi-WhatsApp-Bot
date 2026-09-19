@@ -5,6 +5,7 @@ const path = require("path");
 require("dotenv").config();
 
 const { contentDB, getTopic, getWelcome, getMainMenu, getRegistration, getMenuHelp, getQuickResponse, getCompletion } = require("./content-db.js");
+const { generateCertificate } = require("./certificate.js");
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 const MEDIA_DIR = path.join(__dirname, "media");
@@ -13,18 +14,30 @@ const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: "session2",
   }),
+  takeoverOnConflict: true,
+  restartOnAuthFail: true,
+  qrMaxRetries: 0,
+  authTimeoutMs: 0,
+  // NOTE: no webVersionCache pin — let whatsapp-web.js auto-resolve the
+  // current WhatsApp Web version. Pinning to an old version (e.g.
+  // 2.3000.1017...) causes exactly your symptom: phone shows "logged in"
+  // but `ready` never fires and the QR just sits there.
   puppeteer: {
     headless: true,
+    timeout: 120000,
     args: [
       "--no-sandbox",
       "--disable-setuid-sandbox",
       "--disable-dev-shm-usage",
       "--disable-accelerated-2d-canvas",
       "--no-first-run",
-      "--no-zygote",
       "--disable-gpu",
+      "--disable-extensions",
+      "--disable-background-timer-throttling",
+      "--disable-backgrounding-occluded-windows",
+      "--disable-renderer-backgrounding",
+      "--disable-blink-features=AutomationControlled",
     ],
-    timeout: 60000,
   },
 });
 
@@ -38,7 +51,8 @@ const STAGES = {
   TOOLS_LIST_SELECTION: "tools_list_selection",
   LEARNING: "learning",
   QUIZ: "quiz",
-  COMPLETED: "completed"
+  COMPLETED: "completed",
+  CERT_REQUEST: "CERT_REQUEST"
 };
 
 const REG_FIELDS = ["fullName", "terms", "email_input", "province", "community", "gender", "age", "language", "jobRole"];
@@ -271,8 +285,10 @@ const handleWelcome = async (message) => {
       const module = topic.modules[summary.currentModuleIndex];
       state.currentModule = module;
       state.currentSlide = summary.currentSlideIndex;
-      
-      await message.reply(`📚 *${module.title}*\n\nStep ${summary.currentSlideIndex + 1}: ${module.slides[summary.currentSlideIndex]?.text?.substring(0, 100) || "Continuing..."}\n\nReply *NEXT* to continue or *MENU* to go back.`);
+
+      const slideText = module.slides[summary.currentSlideIndex]?.text;
+      const preview = (Array.isArray(slideText) ? slideText[0] : slideText)?.substring(0, 100) || "Continuing...";
+      await message.reply(`📚 *${module.title}*\n\nStep ${summary.currentSlideIndex + 1}: ${preview}\n\nReply *NEXT* to continue or *MENU* to go back.`);
       state.stage = STAGES.LEARNING;
       return;
     }
@@ -676,38 +692,69 @@ const handleTopicIntro = async (message) => {
 
 const sendSlide = async (message, state, slide) => {
   const userId = message.from;
-  
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Returns false if the WhatsApp page died mid-send (needs re-init).
+  const safeReply = async (content, options) => {
+    try {
+      await message.reply(content, undefined, options);
+      await sleep(600); // pace sends — hammering WA Web back-to-back kills the page
+      return true;
+    } catch (e) {
+      const msg = String(e?.message || e || "");
+      console.error("Reply failed:", msg.split("\n")[0]);
+      if (
+        msg.includes("Execution context was destroyed") ||
+        msg.includes("Protocol error") ||
+        msg.includes("Target closed") ||
+        msg.includes("Session closed")
+      ) {
+        console.error("⚠️ WhatsApp page died mid-send. It usually auto-reloads — next message will retry. If it stays dead, restart the bot.");
+        isReady = false;
+        try {
+          await destroyClient();
+          startClient();
+        } catch (err) {
+          console.error("Re-init after dead page failed:", err?.message || err);
+        }
+      }
+      return false;
+    }
+  };
+
   const textChunks = Array.isArray(slide.text) ? slide.text : [slide.text];
-  
+
   for (const chunk of textChunks) {
     let text = chunk.replace("{name}", usersDB[userId].name || "Learner");
-    await message.reply(text);
+    const ok = await safeReply(text);
+    if (!ok) return; // page dead — stop, don't pile on more sends
   }
-  
+
   if (slide.audio) {
     try {
       const audioPath = path.join(MEDIA_DIR, slide.audio);
       if (fs.existsSync(audioPath)) {
         const media = await MessageMedia.fromFilePath(audioPath);
-        await message.reply(media);
+        await safeReply(media);
       }
     } catch (e) {
-      console.error("Error sending audio:", e);
+      console.error("Error sending audio:", String(e?.message || e).split("\n")[0]);
     }
   } else if (slide.media) {
     try {
       const mediaPath = path.join(MEDIA_DIR, slide.media.filename);
       if (fs.existsSync(mediaPath)) {
         const media = await MessageMedia.fromFilePath(mediaPath);
-        await message.reply(media, undefined, { caption: textChunks[textChunks.length - 1] });
+        await safeReply(media, { caption: textChunks[textChunks.length - 1] });
       }
     } catch (e) {
-      console.error("Error sending media:", e);
+      console.error("Error sending media:", String(e?.message || e).split("\n")[0]);
     }
   }
-  
+
   if (slide.buttons) {
-    await message.reply("What would you like to do next?\n\nReply with *1* to continue or *2* to go back.");
+    await safeReply("What would you like to do next?\n\nReply with *1* to continue or *2* to go back.");
   }
 };
 
@@ -894,13 +941,42 @@ const handleCompleted = async (message) => {
       
       await sendSlide(message, state, nextModule.slides[0]);
     } else {
-      // No more modules - show final congratulations
+      // No more modules - show final congratulations + move to cert flow
       await message.reply(completion.congratulations);
+      state.stage = STAGES.CERT_REQUEST;
     }
     return;
   }
+
+  const sendCertificateNow = async (certName, certEmail) => {
+    try {
+      await message.reply(`⏳ Generating your certificate for *${certName}*...`);
+      const { filePath, certId } = await generateCertificate(certName);
+      const media = await MessageMedia.fromFilePath(filePath);
+      await message.reply(media, undefined, {
+        caption: `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`
+      });
+      if (!usersDB[userId].certificateRequests) {
+        usersDB[userId].certificateRequests = [];
+      }
+      usersDB[userId].certificateRequests.push({
+        name: certName,
+        email: certEmail || usersDB[userId].email || "",
+        certId,
+        file: filePath,
+        date: new Date().toISOString()
+      });
+      saveData();
+      state.stage = STAGES.COMPLETED;
+      await message.reply(`Reply *NEXT TOOL* to revisit modules ➡️\nReply *SHARE* to share with colleagues 📲\nReply *MENU* for main menu 🏠`);
+    } catch (e) {
+      console.error("Certificate generation failed:", e);
+      state.stage = STAGES.COMPLETED;
+      await message.reply(`✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
+    }
+  };
   
-  // Handle "done" / "certificate" - request certificate details
+  // Handle "done" / "certificate" - confirm name then auto-generate
   if (userInput === "done" || userInput === "certificate" || userInput === "cert") {
     const moduleId = state.currentModule?.id;
     const quizScore = usersDB[userId]?.progress[state.currentTopic]?.modules[moduleId]?.quizScore || 0;
@@ -910,37 +986,40 @@ const handleCompleted = async (message) => {
       return;
     }
     
-    // Ask for certificate details (name, email)
-    state.stage = "CERT_REQUEST";
-    await message.reply(`📝 *Certificate Request*\n\nTo prepare your Certificate of Completion, please reply with:\n\n1. Your FULL NAME (as you want it on the certificate)\n2. Your EMAIL ADDRESS (where we will send your certificate)\n\nExample: *John Smith, john@email.com*`);
+    // Reuse name from registration — no need to ask email again
+    const savedName = usersDB[userId]?.fullName || "";
+    state.stage = STAGES.CERT_REQUEST;
+    if (savedName) {
+      await message.reply(`📝 *Almost done!*\n\nWe have your name as: *${savedName}*\n\nReply *YES* to print your certificate with this name,\nor reply with your correct FULL NAME (e.g. *John Smith*).`);
+    } else {
+      await message.reply(`📝 *Certificate Request*\n\nPlease reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
+    }
     return;
   }
   
-  // Handle certificate request - store name and email
-  if (state.stage === "CERT_REQUEST") {
+  // Handle certificate request - confirm name, then auto-generate + send in chat
+  if (state.stage === STAGES.CERT_REQUEST || state.stage === "CERT_REQUEST") {
     const input = message.body.trim();
-    const certParts = input.split(/,|and|;/).map(s => s.trim());
-    
-    if (certParts.length >= 2) {
-      const certName = certParts[0];
-      const certEmail = certParts[1];
-      
-      if (!usersDB[userId].certificateRequests) {
-        usersDB[userId].certificateRequests = [];
+
+    // User confirmed saved name
+    if (/^(yes|yeah|correct|ok|confirm)$/i.test(input) && usersDB[userId]?.fullName) {
+      await sendCertificateNow(usersDB[userId].fullName, usersDB[userId].email);
+      return;
+    }
+
+    const certParts = input.split(/,|and|;/).map(s => s.trim()).filter(Boolean);
+    const certName = certParts[0] || "";
+    const certEmail = certParts[1] || usersDB[userId]?.email || "";
+
+    // Name-only reply (preferred) or legacy "Name, email" both work
+    if (certName.length >= 2 && !/^(done|certificate|cert|menu|retake)$/i.test(certName)) {
+      if (certEmail && !certEmail.includes("@") && certParts.length >= 2) {
+        await message.reply(`Please check your email format and resend as: *Full Name, email@example.com*\n\nOr just reply with your FULL NAME only.`);
+        return;
       }
-      usersDB[userId].certificateRequests.push({
-        name: certName,
-        email: certEmail,
-        date: new Date().toISOString()
-      });
-      saveData();
-      
-      // Reset stage to COMPLETED so user can continue course
-      state.stage = STAGES.COMPLETED;
-      
-      await message.reply(`✅ *Certificate Request Confirmed!*\n\nName: ${certName}\nEmail: ${certEmail}\n\nYour certificate will be prepared and sent to you manually! 📧\n\n─────────────────────────────────\n\nReply *NEXT TOOL* to continue to the next module ➡️\nReply *MENU* to go back to the main menu 🏠`);
+      await sendCertificateNow(certName, certEmail);
     } else {
-      await message.reply(`Please provide both your name and email in the format: *Name, email@example.com*\n\nExample: *John Smith, john@email.com*`);
+      await message.reply(`Please reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
     }
     return;
   }
@@ -984,23 +1063,83 @@ client.on("qr", (qr) => {
   qrcode.generate(qr, { small: true });
 });
 
-client.on("ready", () => {
+client.on("authenticated", () => {
+  console.log("🔐 Authenticated! Waiting for WhatsApp Web to load (ready)...");
+});
+
+client.on("auth_failure", (msg) => {
+  console.error("❌ Authentication failed:", msg);
+});
+
+client.on("ready", async () => {
+  isReady = true;
   console.log("✅ *Témí* Bot is ready!");
+  try {
+    const info = client.info;
+    console.log(`   • Logged in as: ${info?.pushname || "?"} (${info?.wid?.user || "?"})`);
+  } catch {}
   console.log("📚 Pre-loaded content:");
   console.log(`   • Topics: ${Object.keys(contentDB.topics).length}`);
   console.log(`   • AI Tools modules: ${contentDB.topics["ai-tools"]?.modules?.length || 0}`);
   console.log(`   • Registered users: ${Object.keys(usersDB).length}`);
+  console.log("💬 Now text the bot number from another phone. Watch for 'Message from' logs here.");
 });
+
+// Guards against the exact failure in your log: one user tap arriving as
+// 3–4 duplicate events (multi-instance / WA re-emit) all running sendSlide
+// concurrently and killing the page.
+const seenMessageIds = new Set();
+const userQueues = new Map();
+
+const enqueueForUser = (userId, fn) => {
+  const prev = userQueues.get(userId) || Promise.resolve();
+  const next = prev.catch(() => {}).then(fn);
+  userQueues.set(userId, next.catch(() => {}));
+  next.catch(() => {}).finally(() => {
+    if (userQueues.get(userId)) {
+      // tail settled — allow a fresh chain next time; drop the ref
+      userQueues.delete(userId);
+    }
+  });
+  return next;
+};
 
 client.on("message", async (message) => {
   try {
     if (message.from === "status@broadcast" || message.fromMe) return;
     if (message.isGroup) return;
-    
+
+    // Dedupe identical deliveries of the same WhatsApp message
+    const msgId = message.id?._serialized || message.id?.id;
+    if (msgId) {
+      if (seenMessageIds.has(msgId)) {
+        console.log(`⏭️ Ignoring duplicate delivery of ${msgId}`);
+        return;
+      }
+      seenMessageIds.add(msgId);
+      if (seenMessageIds.size > 1000) {
+        const first = seenMessageIds.values().next().value;
+        seenMessageIds.delete(first);
+      }
+    }
+
+    const userId = message.from;
+
+    // Serialize work per user so rapid taps queue instead of colliding
+    await enqueueForUser(userId, async () => {
+      await handleIncomingMessage(message);
+    });
+  } catch (error) {
+    console.error("Error handling message:", error?.message || error);
+  }
+});
+
+const handleIncomingMessage = async (message) => {
+  try {
     const userId = message.from;
     const userInput = message.body.trim().toLowerCase();
     const state = getUserState(userId);
-    
+
     updateLastActive(userId);
     
     console.log(`\n[${new Date().toISOString()}] Message from ${userId}: "${message.body}"`);
@@ -1056,9 +1195,10 @@ client.on("message", async (message) => {
     
     switch (state.stage) {
       case STAGES.NEW:
-        if (userInput === "hello temi") {
-          await handleNewUser(message);
-        }
+        // A brand-new sender should get onboarded on ANY first message,
+        // not just the exact phrase "hello temi". The old code silently
+        // dropped everything else, which looked like "normal text, no reply".
+        await handleNewUser(message);
         break;
         
       case STAGES.WELCOME:
@@ -1094,6 +1234,8 @@ client.on("message", async (message) => {
         break;
         
       case STAGES.COMPLETED:
+      case STAGES.CERT_REQUEST:
+      case "CERT_REQUEST":
         await handleCompleted(message);
         break;
         
@@ -1110,22 +1252,10 @@ client.on("message", async (message) => {
       console.error("Failed to send error message:", e);
     }
   }
-});
-
-client.on("auth_failure", (msg) => {
-  console.error("❌ Authentication failed:", msg);
-  console.log("Retrying in 3 seconds...");
-  setTimeout(() => {
-    client.initialize();
-  }, 3000);
-});
+};
 
 client.on("disconnected", (reason) => {
   console.log("⚠️ Client disconnected:", reason);
-  console.log("Reconnecting in 3 seconds...");
-  setTimeout(() => {
-    client.initialize();
-  }, 3000);
 });
 
 process.on("SIGINT", () => {
@@ -1144,7 +1274,78 @@ if (!fs.existsSync(MEDIA_DIR)) {
 
 
 loadData();
-client.initialize();
+
+let initRetries = 0;
+const MAX_INIT_RETRIES = 5;
+let isReady = false;
+let isInitializing = false;
+
+// Destroy any leaked browser before re-initializing. Without this, a
+// failed initialize() keeps the userDataDir lock and every retry dies with
+// "The browser is already running for ... session2\session".
+const destroyClient = async () => {
+  try {
+    await client.destroy();
+  } catch {}
+  isInitializing = false;
+  // Give Chrome time to release the profile lock
+  await new Promise((r) => setTimeout(r, 2000));
+};
+
+const startClient = () => {
+  if (isReady || isInitializing) {
+    console.log("ℹ️ Already ready/initializing, skipping duplicate initialize.");
+    return;
+  }
+  isInitializing = true;
+  client.initialize().then(() => {
+    isInitializing = false;
+  }).catch(async (err) => {
+    isInitializing = false;
+    if (isReady) return; // late failure after success — ignore
+    console.error("❌ Client.initialize() failed:", err?.message || err);
+    await destroyClient();
+    initRetries++;
+    if (initRetries <= MAX_INIT_RETRIES) {
+      const delay = 5000 * initRetries;
+      console.log(`🔄 Retrying initialize (${initRetries}/${MAX_INIT_RETRIES}) in ${delay / 1000}s...`);
+      setTimeout(startClient, delay);
+    } else {
+      console.error("💥 Max retries reached. Fixes to try:");
+      console.error("   1. taskkill /F /IM chrome.exe  (kill zombie Chrome holding the lock)");
+      console.error("   2. Delete session2/session/Default/Singleton* lock files");
+      console.error("   3. If QR/auth is corrupt: back up then delete session2/ and re-scan");
+      console.error("   4. Use Node 20/22 LTS (you are on Node 25, which puppeteer 24 does not officially support)");
+      process.exit(1);
+    }
+  });
+};
+
+client.on("loading_screen", (percent, message) => {
+  console.log(`⏳ Loading WhatsApp Web: ${percent}% - ${message}`);
+});
+
+client.on("change_state", (state) => {
+  console.log("🔄 Connection state:", state);
+});
+
+process.on("unhandledRejection", (reason) => {
+  const msg = String(reason?.message || reason || "");
+  // This is the exact crash you hit: page reloaded mid-inject. Only retry
+  // if we never became ready — otherwise we'd spawn a duplicate session
+  // (multiple "Bot is ready!" + duplicate replies).
+  if ((msg.includes("Execution context was destroyed") || msg.includes("Protocol error")) && !isReady) {
+    console.error("⚠️ Transient inject race (page reloaded mid-inject), retrying in 5s...");
+    setTimeout(async () => {
+      await destroyClient();
+      startClient();
+    }, 5000);
+    return;
+  }
+  console.error("Unhandled Rejection:", reason);
+});
+
+startClient();
 
 console.log("🚀 Starting *Témí* — Learn AI. Teach Better...");
 console.log("⏳ Please wait while WhatsApp Web loads...");
