@@ -10,6 +10,86 @@ const { generateCertificate } = require("./certificate.js");
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 const MEDIA_DIR = path.join(__dirname, "media");
 
+// NOTE: version pin REMOVED (2026-09-22) — the pinned 2.3000.1047079153 HTML
+// shell still fetches (200) but its JS bundles no longer boot window.Debug,
+// so initialize() crashes with "Cannot read properties of undefined (reading
+// 'VERSION')". Stability > pinning: let whatsapp-web.js use its default
+// (live) version. To re-pin later, uncomment the webVersion/webVersionCache
+// lines below AND first verify checkPinnedVersion() reports a healthy page.
+// const PINNED_WWEB_VERSION = "2.3000.1047079153-alpha";
+const PINNED_WWEB_VERSION = null; // null = use default live version
+
+// Startup diagnostic: fetches the pin URL and logs what it actually returns
+// (status, length, first 200 chars). Fire-and-forget — never blocks boot.
+const checkPinnedVersion = async (version) => {
+  if (!version) {
+    console.log("ℹ️ No WA Web version pinned — using whatsapp-web.js default (live) version.");
+    return;
+  }
+  const url = `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${version}.html`;
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    console.log(`📌 Pin check ${version}: status=${res.status} len=${text.length}`);
+    console.log(`📌 Pin check head200: ${JSON.stringify(text.substring(0, 200))}`);
+    if (!res.ok || !/whatsapp-web/i.test(text.substring(0, 500))) {
+      console.error("📌 Pin check FAILED — pinned HTML looks wrong, NOT using pin.");
+    }
+  } catch (e) {
+    console.error("📌 Pin check fetch failed:", e?.message || e);
+  }
+};
+checkPinnedVersion(PINNED_WWEB_VERSION);
+
+// @lid → @c.us resolution for media sends. Fresh sessions surface inbound
+// senders as 1234@lid, and media upload addressed at the @lid fails with the
+// wwebjs-step:addsend memoize/id error while text still goes through.
+// getContact() resolves the underlying chat ID — always logged so the
+// conversion is visible, cached per sender, fallback to message.from.
+const lidToChatCache = new Map();
+const resolveChatId = async (message) => {
+  const from = message.from;
+  if (!/@lid$/.test(from || "")) return from;
+  if (lidToChatCache.has(from)) {
+    const cached = lidToChatCache.get(from);
+    console.log(`🔍 ID resolve (cached): message.from=${from} chatId=${cached}`);
+    return cached;
+  }
+  try {
+    const contact = await message.getContact();
+    const serialized = contact?.id?._serialized;
+    console.log(`🔍 ID resolve: message.from=${from} contact.id=${serialized} isWAContact=${contact?.isWAContact}`);
+    if (serialized && serialized !== from) {
+      lidToChatCache.set(from, serialized);
+      return serialized;
+    }
+  } catch (e) {
+    console.log(`🔍 ID resolve failed for ${from}, falling back to message.from:`, e?.message || e);
+  }
+  return from;
+};
+
+// Central media sender. Cascade:
+//  1. 2s settle delay (fresh WA Web pages race media upload)
+//  2. chat.sendMessage primary (store's own chat record)
+//  3. client.sendMessage(resolved @c.us) fallback
+// NOTE: MessageMedia has NO id field ({mimetype,data,filename,filesize} only
+// per MessageMedia.js) — the memoize/id throw comes from WA's own page-side
+// getters, so stamping media.id would be a no-op and is NOT done here.
+const sendMedia = async (message, media, options = {}) => {
+  console.log(`📤 Media send: file=${media?.filename} type=${media?.mimetype} b64len=${media?.data?.length || 0} caption=${(options.caption || "").length} chars`);
+  await new Promise((r) => setTimeout(r, 2000));
+  const chatId = await resolveChatId(message);
+  try {
+    const chat = await message.getChat();
+    console.log(`📤 Media via chat.sendMessage (chat=${chat?.id?._serialized || chatId})`);
+    return await chat.sendMessage(media, options);
+  } catch (e1) {
+    console.log(`📤 chat.sendMessage failed (${String(e1?.message || e1).split("\n")[0]}), fallback client.sendMessage(${chatId})`);
+    return await client.sendMessage(chatId, media, options);
+  }
+};
+
 const client = new Client({
   authStrategy: new LocalAuth({
     dataPath: "session2",
@@ -18,10 +98,17 @@ const client = new Client({
   restartOnAuthFail: true,
   qrMaxRetries: 0,
   authTimeoutMs: 0,
-  // NOTE: no webVersionCache pin — let whatsapp-web.js auto-resolve the
-  // current WhatsApp Web version. Pinning to an old version (e.g.
-  // 2.3000.1017...) causes exactly your symptom: phone shows "logged in"
-  // but `ready` never fires and the QR just sits there.
+  // ...(PINNED_WWEB_VERSION
+  //   ? {
+  //       webVersion: PINNED_WWEB_VERSION,
+  //       webVersionCache: {
+  //         type: "remote",
+  //         remotePath:
+  //           "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
+  //         strict: false, // false = fall back to live version instead of crashing
+  //       },
+  //     }
+  //   : {}),
   puppeteer: {
     headless: true,
     timeout: 120000,
@@ -217,16 +304,27 @@ const handleNewUser = async (message) => {
   const welcome = getWelcome();
   let welcomeText = welcome.text;
   
+  // Original behavior: image with caption attached (as before).
+  // NOTE: media goes via client.sendMessage (no quoted msg) — message.reply
+  // with media serializes the quoted message and trips the
+  // wwebjs-step:addsend memoize/id error on mismatched WA Web versions.
   if (welcome.media) {
     try {
       const mediaPath = path.join(MEDIA_DIR, welcome.media.filename);
       if (fs.existsSync(mediaPath)) {
-        const media = await MessageMedia.fromFilePath(mediaPath);
-        await message.reply(media, undefined, { caption: welcomeText });
+        let media = MessageMedia.fromFilePath(mediaPath);
+        if (!media?.data) {
+          const b64 = fs.readFileSync(mediaPath).toString("base64");
+          media = new MessageMedia("image/jpeg", b64, welcome.media.filename);
+        }
+        await sendMedia(message, media, { caption: welcomeText });
         return;
+      } else {
+        console.log(`Welcome media missing at ${mediaPath}, sending text only`);
       }
     } catch (e) {
-      console.log("Media not found, sending text only");
+      console.log("Welcome media send failed, sending text only:", e?.message || e);
+      console.log("STACK:", e?.stack?.split("\n").slice(0, 6).join("\n"));
     }
   }
   
@@ -502,8 +600,8 @@ const handleMainMenu = async (message) => {
     
     const introMediaPath = path.join(MEDIA_DIR, "tools list  intro.jpeg");
     if (fs.existsSync(introMediaPath)) {
-      const introMedia = await MessageMedia.fromFilePath(introMediaPath);
-      await message.reply(introMedia, undefined, { caption: introText + "\n\nReply with *1* to start or *2* to go back." });
+      const introMedia = MessageMedia.fromFilePath(introMediaPath);
+      await sendMedia(message, introMedia, { caption: introText + "\n\nReply with *1* to start or *2* to go back." });
     } else {
       await message.reply(introText + "\n\nReply with *1* to start or *2* to go back.");
     }
@@ -696,9 +794,16 @@ const sendSlide = async (message, state, slide) => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // Returns false if the WhatsApp page died mid-send (needs re-init).
+  // Media goes via client.sendMessage (no quote) to avoid the
+  // wwebjs-step:addsend memoize/id error; text stays on message.reply.
   const safeReply = async (content, options) => {
     try {
-      await message.reply(content, undefined, options);
+      const isMedia = content && content.mimetype && content.data;
+      if (isMedia) {
+        await sendMedia(message, content, options || {});
+      } else {
+        await message.reply(content, undefined, options);
+      }
       await sleep(600); // pace sends — hammering WA Web back-to-back kills the page
       return true;
     } catch (e) {
@@ -901,7 +1006,6 @@ const handleQuiz = async (message) => {
     finalMessage += `Reply *DONE* to see your certificate.\n`;
     finalMessage += `Reply *MENU* to go back to the main menu.`;
     
-    await message.reply(finalMessage);
     updateUserProgress(userId, state.currentTopic, module.id, null, true);
     
     if (!usersDB[userId].progress[state.currentTopic].modules[module.id]) {
@@ -909,7 +1013,38 @@ const handleQuiz = async (message) => {
     }
     usersDB[userId].progress[state.currentTopic].modules[module.id].quizScore = correct;
     saveData();
-    
+
+    // Module completion: ONE combined response — quiz result text as the
+    // congratulations image caption (sent together, same moment).
+    // Media goes via sendMedia (no quoted msg); text-only fallback if the
+    // image file is missing or the send fails. No auto-certificate here —
+    // cert only triggers on explicit DONE after all 3 modules (see below).
+    const completionFiles = {
+      chatgpt: "module1-complete.jpeg",
+      magicschool: "module2-complete.jpeg",
+      eduaide: "module3-complete.jpeg"
+    };
+    const completionFile = completionFiles[module.id];
+    try {
+      const mediaPath = completionFile ? path.join(MEDIA_DIR, completionFile) : null;
+      if (mediaPath && fs.existsSync(mediaPath)) {
+        let completionMedia = MessageMedia.fromFilePath(mediaPath);
+        if (!completionMedia?.data) {
+          const b64 = fs.readFileSync(mediaPath).toString("base64");
+          completionMedia = new MessageMedia("image/jpeg", b64, completionFile);
+        }
+        await sendMedia(message, completionMedia, { caption: finalMessage });
+      } else {
+        console.log(`Completion media missing at ${mediaPath}, sending text only`);
+        await message.reply(finalMessage);
+      }
+    } catch (e) {
+      console.log("Completion media send failed, sending text only:", e?.message || e);
+      try {
+        await message.reply(finalMessage);
+      } catch {}
+    }
+
     state.stage = STAGES.COMPLETED;
   }
 };
@@ -952,8 +1087,8 @@ const handleCompleted = async (message) => {
     try {
       await message.reply(`⏳ Generating your certificate for *${certName}*...`);
       const { filePath, certId } = await generateCertificate(certName);
-      const media = await MessageMedia.fromFilePath(filePath);
-      await message.reply(media, undefined, {
+      const media = MessageMedia.fromFilePath(filePath);
+      await sendMedia(message, media, {
         caption: `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`
       });
       if (!usersDB[userId].certificateRequests) {
@@ -976,10 +1111,25 @@ const handleCompleted = async (message) => {
     }
   };
   
-  // Handle "done" / "certificate" - confirm name then auto-generate
+  // Handle "done" / "certificate" — explicit DONE only, and only after
+  // ALL modules are complete. Never auto-generates. Asks for name
+  // confirmation first; cert generates on YES / name reply (see below).
   if (userInput === "done" || userInput === "certificate" || userInput === "cert") {
+    const topicId = state.currentTopic || "ai-tools";
+    const topic = getTopic(topicId);
+    const topicModules = topic?.modules || [];
+    const progModules = usersDB[userId]?.progress[topicId]?.modules || {};
+    const allModulesDone = topicModules.length > 0 && topicModules.every((m) => progModules[m.id]?.completed);
+
+    if (!allModulesDone) {
+      const doneCount = topicModules.filter((m) => progModules[m.id]?.completed).length;
+      const totalCount = topicModules.length || 3;
+      await message.reply(`📚 *Not quite yet!*\n\nYou've completed ${doneCount}/${totalCount} modules.\n\nFinish all ${totalCount} modules first, then reply *DONE* to get your certificate.\n\nReply *NEXT TOOL* to continue ➡️\nReply *MENU* for main menu 🏠`);
+      return;
+    }
+
     const moduleId = state.currentModule?.id;
-    const quizScore = usersDB[userId]?.progress[state.currentTopic]?.modules[moduleId]?.quizScore || 0;
+    const quizScore = usersDB[userId]?.progress[topicId]?.modules[moduleId]?.quizScore || 0;
     
     if (quizScore < 4) {
       await message.reply(`📝 *Quiz Retake Required*\n\nYour quiz score was ${quizScore}/5. You need a score of *4 or higher* to get your certificate.\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
@@ -1071,10 +1221,25 @@ client.on("auth_failure", (msg) => {
   console.error("❌ Authentication failed:", msg);
 });
 
+client.on("message_create", async (message) => {
+  // Diagnostic disabled: was tripling logs. Re-enable only when debugging.
+  return;
+  // try {
+  //   console.log(`[diag message_create] from=${message.from} fromMe=${message.fromMe} isGroup=${message.isGroup} body="${(message.body || "").slice(0, 80)}"`);
+  // } catch {}
+});
+
 client.on("ready", async () => {
+  if (isReady) return;
   isReady = true;
+  try {
+    loadingHistory = [];
+    healthFailStreak = 0;
+    attachPageGuards();
+  } catch {}
   console.log("✅ *Témí* Bot is ready!");
   try {
+    console.log(`   • WA Web version: ${await client.getWWebVersion()}`);
     const info = client.info;
     console.log(`   • Logged in as: ${info?.pushname || "?"} (${info?.wid?.user || "?"})`);
   } catch {}
@@ -1126,6 +1291,7 @@ client.on("message", async (message) => {
     const userId = message.from;
 
     // Serialize work per user so rapid taps queue instead of colliding
+    try { lastInboundAt = Date.now(); } catch {}
     await enqueueForUser(userId, async () => {
       await handleIncomingMessage(message);
     });
@@ -1254,11 +1420,16 @@ const handleIncomingMessage = async (message) => {
   }
 };
 
+let isShuttingDown = false;
+
 client.on("disconnected", (reason) => {
   console.log("⚠️ Client disconnected:", reason);
+  if (isShuttingDown || isReinitializing) return;
+  reinitialize(`client disconnected (${reason})`);
 });
 
 process.on("SIGINT", () => {
+  isShuttingDown = true;
   console.log("\n👋 Shutting down gracefully...");
   saveData();
   client.destroy();
@@ -1323,11 +1494,140 @@ const startClient = () => {
 
 client.on("loading_screen", (percent, message) => {
   console.log(`⏳ Loading WhatsApp Web: ${percent}% - ${message}`);
+  try { recordLoading(percent); } catch {}
 });
 
 client.on("change_state", (state) => {
   console.log("🔄 Connection state:", state);
+  lastStateChangeAt = Date.now();
 });
+
+// ---- Session watchdog + Puppeteer page-crash guards ----
+// Covers the 95%→99%→95% loading loop and mid-session silent death:
+// - loading stall / loop while !isReady  → reinit (5 min budget)
+// - dead page while ready (getState probe fails) → reinit (no manual restart)
+// - pupPage close/error, browser disconnect, navigate-away → reinit
+const WATCHDOG_INTERVAL_MS = 60 * 1000;
+const STALL_BUDGET_MS = 5 * 60 * 1000;
+const PROBE_TIMEOUT_MS = 20 * 1000;
+let lastInboundAt = 0;
+let lastLoadingAt = 0;
+let lastStateChangeAt = 0;
+let loadingHistory = []; // { t, percent }
+let healthFailStreak = 0;
+let isReinitializing = false;
+let pageGuardsAttachedTo = null;
+
+const reinitialize = async (reason) => {
+  if (isShuttingDown || isReinitializing) return;
+  isReinitializing = true;
+  console.error(`🔄 Reinitializing client (${reason})...`);
+  isReady = false;
+  initRetries = 0;
+  try {
+    await destroyClient();
+  } catch (e) {
+    console.error("Reinit destroy failed:", e?.message || e);
+  }
+  isReinitializing = false;
+  startClient();
+};
+
+const attachPageGuards = () => {
+  try {
+    const page = client.pupPage;
+    if (page && pageGuardsAttachedTo !== page) {
+      pageGuardsAttachedTo = page;
+      page.on("close", () => reinitialize("WhatsApp page closed"));
+      page.on("error", (e) => reinitialize(`WhatsApp page error (${e?.message || e})`));
+      page.on("framenavigated", (frame) => {
+        try {
+          if (frame && typeof frame.parentFrame === "function" && !frame.parentFrame()) {
+            const url = frame.url();
+            if (url && !url.includes("web.whatsapp.com")) {
+              reinitialize(`navigated away unexpectedly (${url})`);
+            }
+          }
+        } catch {}
+      });
+      console.log("🛡️ Page crash guards attached.");
+    }
+    const browser = client.pupBrowser;
+    if (browser && !browser.__temiGuard) {
+      browser.__temiGuard = true;
+      browser.on("disconnected", () => reinitialize("puppeteer browser disconnected"));
+    }
+  } catch {}
+};
+
+const recordLoading = (percent) => {
+  const now = Date.now();
+  lastLoadingAt = now;
+  loadingHistory.push({ t: now, percent });
+  // keep last 10 min only
+  loadingHistory = loadingHistory.filter((e) => now - e.t < 10 * 60 * 1000);
+};
+
+const isLoadingLoop = () => {
+  const now = Date.now();
+  const recent = loadingHistory.filter((e) => now - e.t < STALL_BUDGET_MS);
+  // loop signature: many high-90s events, never reaching ready
+  if (recent.length < 8) return false;
+  const high = recent.filter((e) => e.percent >= 90).length;
+  return high >= 8;
+};
+
+setInterval(async () => {
+  if (isShuttingDown || isReinitializing || isInitializing) return;
+  const now = Date.now();
+  try {
+    attachPageGuards();
+  } catch {}
+
+  if (!isReady) {
+    // pre-ready: stall or 95↔99 loop
+    if (lastLoadingAt && now - lastLoadingAt > STALL_BUDGET_MS) {
+      await reinitialize("no loading progress for 5 min");
+      return;
+    }
+    if (isLoadingLoop()) {
+      await reinitialize("loading loop detected (95%↔99% without ready)");
+      return;
+    }
+    return;
+  }
+
+  // ready: probe the page — silent death shows up here first
+  try {
+    const state = await Promise.race([
+      client.getState(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error("getState timeout")), PROBE_TIMEOUT_MS)),
+    ]);
+    if (state === "CONNECTED" || state === "OPENING" || state === "PAIRING") {
+      healthFailStreak = 0;
+      return;
+    }
+    console.log(`⚠️ Watchdog: unexpected state "${state}"`);
+    healthFailStreak++;
+  } catch (e) {
+    const msg = String(e?.message || e || "");
+    console.error("⚠️ Watchdog probe failed:", msg.split("\n")[0]);
+    const fatal = /Target closed|Session closed|Protocol error|Execution context was destroyed|getState timeout/i.test(msg);
+    healthFailStreak++;
+    if (fatal) {
+      await reinitialize(`health probe fatal (${msg.split("\n")[0]})`);
+      return;
+    }
+  }
+
+  // >5 min of consecutive probe failures (or no successful traffic while
+  // inbound arrived) → the bot is "not responding" → reinit without restart
+  const inboundWaiting = lastInboundAt > 0 && now - lastInboundAt < 10 * 60 * 1000;
+  if (healthFailStreak >= 5 || (healthFailStreak >= 3 && inboundWaiting)) {
+    healthFailStreak = 0;
+    await reinitialize("not responding for 5+ min (probe failures)");
+  }
+}, WATCHDOG_INTERVAL_MS);
 
 process.on("unhandledRejection", (reason) => {
   const msg = String(reason?.message || reason || "");
