@@ -138,8 +138,7 @@ const STAGES = {
   TOOLS_LIST_SELECTION: "tools_list_selection",
   LEARNING: "learning",
   QUIZ: "quiz",
-  COMPLETED: "completed",
-  CERT_REQUEST: "CERT_REQUEST"
+  COMPLETED: "completed"
 };
 
 const REG_FIELDS = ["fullName", "terms", "email_input", "province", "community", "gender", "age", "language", "jobRole"];
@@ -243,7 +242,8 @@ const getUserState = (userId) => {
       currentSlide: 0,
       currentQuizQuestion: 0,
       quizAnswers: [],
-      startedAt: null
+      startedAt: null,
+      awaitingCertConfirm: false
     });
   }
   return userStates.get(userId);
@@ -1002,9 +1002,20 @@ const handleQuiz = async (message) => {
     }
     
     finalMessage += `\n\n━━━━━━━━━━━━━━━━━━━━\n\n`;
-    finalMessage += `Reply *NEXT TOOL* to continue to the next AI tool.\n`;
-    finalMessage += `Reply *DONE* to see your certificate.\n`;
-    finalMessage += `Reply *MENU* to go back to the main menu.`;
+    // FIX 1: Module-specific completion prompts.
+    // Final module (Edu Aide) shows DONE; Modules 1-2 show NEXT TOOL.
+    const _quizTopic = getTopic(state.currentTopic || "ai-tools");
+    const _quizModules = _quizTopic?.modules || [];
+    const _isFinalModule = _quizModules.length > 0
+      ? _quizModules[_quizModules.length - 1].id === module.id
+      : module.id === "eduaide";
+    if (_isFinalModule) {
+      finalMessage += `Reply *DONE* to see your certificate.\n`;
+      finalMessage += `Reply *MENU* to go back to the main menu.`;
+    } else {
+      finalMessage += `Reply *NEXT TOOL* to continue to the next AI tool.\n`;
+      finalMessage += `Reply *MENU* to go back to the main menu.`;
+    }
     
     updateUserProgress(userId, state.currentTopic, module.id, null, true);
     
@@ -1055,6 +1066,73 @@ const handleCompleted = async (message) => {
   const state = getUserState(userId);
   const mainMenu = getMainMenu();
   const completion = getCompletion();
+
+  const sendCertificateNow = async (certName) => {
+    try {
+      await message.reply(`⏳ Generating your certificate for *${certName}*...`);
+      const { filePath, certId } = await generateCertificate(certName);
+      const media = MessageMedia.fromFilePath(filePath);
+      await sendMedia(message, media, {
+        caption: `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`
+      });
+      if (!usersDB[userId].certificateRequests) {
+        usersDB[userId].certificateRequests = [];
+      }
+      usersDB[userId].certificateRequests.push({
+        name: certName,
+        email: usersDB[userId].email || "",
+        certId,
+        file: filePath,
+        date: new Date().toISOString()
+      });
+      saveData();
+      state.awaitingCertConfirm = false;
+      state.stage = STAGES.COMPLETED;
+      await message.reply(`Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲`);
+    } catch (e) {
+      console.error("Certificate generation failed:", e);
+      state.awaitingCertConfirm = false;
+      state.stage = STAGES.COMPLETED;
+      await message.reply(`✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
+    }
+  };
+
+  // SINGLE certificate flow: user typed DONE after Module 3 and is now
+  // confirming the name. Confirm with YES or reply with correct FULL NAME.
+  // No email is ever asked — cert auto-generates and delivers in chat.
+  if (state.awaitingCertConfirm) {
+    const input = message.body.trim();
+
+    if (/^(menu|2|back)$/i.test(input) || input.toLowerCase().includes("back")) {
+      state.awaitingCertConfirm = false;
+      state.stage = STAGES.MAIN_MENU;
+      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      return;
+    }
+
+    // User confirmed saved name
+    if (/^(yes|yeah|correct|ok|confirm)$/i.test(input) && usersDB[userId]?.fullName) {
+      await sendCertificateNow(usersDB[userId].fullName);
+      return;
+    }
+
+    const certName = input;
+
+    if (certName.length >= 2 && !/^(done|certificate|cert|menu|retake|next tool|next|share)$/i.test(certName)) {
+      await sendCertificateNow(certName);
+    } else if (/^(next tool|next)$/i.test(certName)) {
+      state.awaitingCertConfirm = false;
+      // fall through to next-tool handling below
+    } else {
+      await message.reply(`Please reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
+      return;
+    }
+    if (/^(next tool|next)$/i.test(certName)) {
+      // handled by next-tool block below — do not return here
+    } else {
+      return;
+    }
+  }
   
   // Handle "next tool" or "next" - go to next module
   if (userInput === "next tool" || userInput === "next" || userInput === "finished" || userInput === "all done" || userInput === "completed" || userInput === "i am done" || userInput === "i have finished all tools") {
@@ -1076,44 +1154,16 @@ const handleCompleted = async (message) => {
       
       await sendSlide(message, state, nextModule.slides[0]);
     } else {
-      // No more modules - show final congratulations + move to cert flow
-      await message.reply(completion.congratulations);
-      state.stage = STAGES.CERT_REQUEST;
+      // Full course already completed (incl. after certificate delivery) —
+      // single message, no old manual cert flow.
+      await message.reply(`You have completed the full course! Reply *MENU* for main menu or *SHARE* to share with colleagues`);
     }
     return;
   }
-
-  const sendCertificateNow = async (certName, certEmail) => {
-    try {
-      await message.reply(`⏳ Generating your certificate for *${certName}*...`);
-      const { filePath, certId } = await generateCertificate(certName);
-      const media = MessageMedia.fromFilePath(filePath);
-      await sendMedia(message, media, {
-        caption: `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`
-      });
-      if (!usersDB[userId].certificateRequests) {
-        usersDB[userId].certificateRequests = [];
-      }
-      usersDB[userId].certificateRequests.push({
-        name: certName,
-        email: certEmail || usersDB[userId].email || "",
-        certId,
-        file: filePath,
-        date: new Date().toISOString()
-      });
-      saveData();
-      state.stage = STAGES.COMPLETED;
-      await message.reply(`Reply *NEXT TOOL* to revisit modules ➡️\nReply *SHARE* to share with colleagues 📲\nReply *MENU* for main menu 🏠`);
-    } catch (e) {
-      console.error("Certificate generation failed:", e);
-      state.stage = STAGES.COMPLETED;
-      await message.reply(`✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
-    }
-  };
   
   // Handle "done" / "certificate" — explicit DONE only, and only after
   // ALL modules are complete. Never auto-generates. Asks for name
-  // confirmation first; cert generates on YES / name reply (see below).
+  // confirmation first; cert generates on YES / name reply (see above).
   if (userInput === "done" || userInput === "certificate" || userInput === "cert") {
     const topicId = state.currentTopic || "ai-tools";
     const topic = getTopic(topicId);
@@ -1136,40 +1186,14 @@ const handleCompleted = async (message) => {
       return;
     }
     
-    // Reuse name from registration — no need to ask email again
+    // Reuse name from registration — no email asked, cert auto-delivers in chat
     const savedName = usersDB[userId]?.fullName || "";
-    state.stage = STAGES.CERT_REQUEST;
+    state.awaitingCertConfirm = true;
+    state.stage = STAGES.COMPLETED;
     if (savedName) {
       await message.reply(`📝 *Almost done!*\n\nWe have your name as: *${savedName}*\n\nReply *YES* to print your certificate with this name,\nor reply with your correct FULL NAME (e.g. *John Smith*).`);
     } else {
       await message.reply(`📝 *Certificate Request*\n\nPlease reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
-    }
-    return;
-  }
-  
-  // Handle certificate request - confirm name, then auto-generate + send in chat
-  if (state.stage === STAGES.CERT_REQUEST || state.stage === "CERT_REQUEST") {
-    const input = message.body.trim();
-
-    // User confirmed saved name
-    if (/^(yes|yeah|correct|ok|confirm)$/i.test(input) && usersDB[userId]?.fullName) {
-      await sendCertificateNow(usersDB[userId].fullName, usersDB[userId].email);
-      return;
-    }
-
-    const certParts = input.split(/,|and|;/).map(s => s.trim()).filter(Boolean);
-    const certName = certParts[0] || "";
-    const certEmail = certParts[1] || usersDB[userId]?.email || "";
-
-    // Name-only reply (preferred) or legacy "Name, email" both work
-    if (certName.length >= 2 && !/^(done|certificate|cert|menu|retake)$/i.test(certName)) {
-      if (certEmail && !certEmail.includes("@") && certParts.length >= 2) {
-        await message.reply(`Please check your email format and resend as: *Full Name, email@example.com*\n\nOr just reply with your FULL NAME only.`);
-        return;
-      }
-      await sendCertificateNow(certName, certEmail);
-    } else {
-      await message.reply(`Please reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
     }
     return;
   }
@@ -1306,6 +1330,11 @@ const handleIncomingMessage = async (message) => {
     const userInput = message.body.trim().toLowerCase();
     const state = getUserState(userId);
 
+    // Legacy migration: old CERT_REQUEST stage removed — route to COMPLETED.
+    if (state.stage === "CERT_REQUEST") {
+      state.stage = STAGES.COMPLETED;
+    }
+
     updateLastActive(userId);
     
     console.log(`\n[${new Date().toISOString()}] Message from ${userId}: "${message.body}"`);
@@ -1400,8 +1429,6 @@ const handleIncomingMessage = async (message) => {
         break;
         
       case STAGES.COMPLETED:
-      case STAGES.CERT_REQUEST:
-      case "CERT_REQUEST":
         await handleCompleted(message);
         break;
         
