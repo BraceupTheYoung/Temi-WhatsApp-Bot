@@ -1,8 +1,10 @@
 const fs = require("fs");
 const path = require("path");
 const sharp = require("sharp");
+const { PDFDocument, StandardFonts, PDFName, rgb } = require("pdf-lib");
 
 const CERT_DIR = path.join(__dirname, "certificates");
+const TEMPLATE_PDF = path.join(__dirname, "media", "certificate-template.pdf");
 const TEMPLATE_PNG = path.join(__dirname, "media", "certificate-template.png");
 const TEMPLATE_JPG = path.join(__dirname, "media", "certificate-template.jpeg");
 
@@ -141,4 +143,119 @@ async function generateCertificate(fullName, opts = {}) {
   return { filePath, certId, date: dateStr };
 }
 
-module.exports = { generateCertificate };
+module.exports = { generateCertificate, generateCertificatePDF };
+
+/**
+ * Shrink font size until text fits maxWidth (in PDF points).
+ */
+function fitToWidth(font, text, maxWidth, startSize, minSize) {
+  let size = startSize;
+  while (size > minSize && font.widthOfTextAtSize(text, size) > maxWidth) {
+    size -= 1;
+  }
+  return size;
+}
+
+/**
+ * Generate a certificate PDF using the org template
+ * (media/certificate-template.pdf, A4 landscape 842x595pt).
+ *
+ * Blanks mapped from the template (measured Dec 2025):
+ *  - Name:   long centered underline (~y 241) → text baseline y=253, center x=431
+ *  - Course: inline blank after "completed the" (~y 198) → baseline y=208, center x=536
+ *  - Date:   inline blank after "on" (~y 182) → baseline y=191, center x=257
+ *  - Cert ID: tiny grey footer, bottom-center (org has no ID field).
+ *
+ * Long names/courses/dates auto-shrink to fit their underline.
+ *
+ * @param {string} fullName - name as it should appear on certificate
+ * @param {object} opts - { course, date, certId }
+ * @returns {Promise<{ filePath, certId, date }>}
+ */
+async function generateCertificatePDF(fullName, opts = {}) {
+  const name = String(fullName || "").trim();
+  if (!name) throw new Error("fullName is required");
+  if (!fs.existsSync(TEMPLATE_PDF)) {
+    throw new Error(`PDF template missing at ${TEMPLATE_PDF}`);
+  }
+
+  if (!fs.existsSync(CERT_DIR)) fs.mkdirSync(CERT_DIR, { recursive: true });
+
+  const course = String(opts.course || "AI Tools for Teachers").trim();
+  const dateStr = opts.date || formatDate();
+  const certId = opts.certId || makeCertId();
+
+  const templateBytes = fs.readFileSync(TEMPLATE_PDF);
+  const pdfDoc = await PDFDocument.load(templateBytes);
+  const page = pdfDoc.getPages()[0];
+
+  // The org template's MediaBox starts at y≈8.58, not 0. pdf-lib draws
+  // relative to (0,0), so every Y we specify lands ~8.58pt too low.
+  // Read the offset at runtime so a re-exported template still works.
+  let yOff = 0;
+  try {
+    const box = page.node.get(PDFName.of("MediaBox"));
+    if (box && typeof box.size === "function" && box.size() === 4) {
+      const y0 = box.get(1);
+      yOff = (y0 && typeof y0.asNumber === "function" ? y0.asNumber() : Number(y0)) || 0;
+    }
+  } catch { /* default yOff = 0 */ }
+
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const regular = await pdfDoc.embedFont(StandardFonts.Helvetica);
+
+  const ink = rgb(0.08, 0.08, 0.08);
+  const green = rgb(0.04, 0.24, 0.09);
+
+  // 1) NAME — long centered underline (line y≈241)
+  const nameText = name.toUpperCase();
+  const nameSize = fitToWidth(bold, nameText, 280, 30, 13);
+  const nameW = bold.widthOfTextAtSize(nameText, nameSize);
+  page.drawText(nameText, {
+    x: 431 - nameW / 2,
+    y: 253 + yOff,
+    size: nameSize,
+    font: bold,
+    color: green,
+  });
+
+  // 2) COURSE — inline blank ("completed the ___ course", line y≈199)
+  const courseSize = fitToWidth(regular, course, 190, 14, 9);
+  const courseW = regular.widthOfTextAtSize(course, courseSize);
+  page.drawText(course, {
+    x: 536 - courseW / 2,
+    y: 204 + yOff,
+    size: courseSize,
+    font: regular,
+    color: ink,
+  });
+
+  // 3) DATE — inline blank ("on ___ demonstrating", line y≈182)
+  const dateSize = fitToWidth(regular, dateStr, 96, 12, 8);
+  const dateW = regular.widthOfTextAtSize(dateStr, dateSize);
+  page.drawText(dateStr, {
+    x: 257 - dateW / 2,
+    y: 186 + yOff,
+    size: dateSize,
+    font: regular,
+    color: ink,
+  });
+
+  // 4) CERT ID — tiny footer, out of the org design's way
+  const idText = `ID: ${certId}`;
+  const idSize = 7.5;
+  const idW = regular.widthOfTextAtSize(idText, idSize);
+  page.drawText(idText, {
+    x: 421 - idW / 2,
+    y: 24 + yOff,
+    size: idSize,
+    font: regular,
+    color: rgb(0.45, 0.45, 0.45),
+  });
+
+  const safeFile = name.replace(/[^a-z0-9]+/gi, "_").slice(0, 40) || "certificate";
+  const filePath = path.join(CERT_DIR, `${safeFile}-${certId}.pdf`);
+  fs.writeFileSync(filePath, await pdfDoc.save());
+
+  return { filePath, certId, date: dateStr };
+}

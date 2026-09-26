@@ -5,7 +5,7 @@ const path = require("path");
 require("dotenv").config();
 
 const { contentDB, getTopic, getWelcome, getMainMenu, getRegistration, getMenuHelp, getQuickResponse, getCompletion } = require("./content-db.js");
-const { generateCertificate } = require("./certificate.js");
+const { generateCertificatePDF } = require("./certificate.js");
 
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 const MEDIA_DIR = path.join(__dirname, "media");
@@ -1070,7 +1070,7 @@ const handleCompleted = async (message) => {
   const sendCertificateNow = async (certName) => {
     try {
       await message.reply(`⏳ Generating your certificate for *${certName}*...`);
-      const { filePath, certId } = await generateCertificate(certName);
+      const { filePath, certId } = await generateCertificatePDF(certName);
       const media = MessageMedia.fromFilePath(filePath);
       await sendMedia(message, media, {
         caption: `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`
