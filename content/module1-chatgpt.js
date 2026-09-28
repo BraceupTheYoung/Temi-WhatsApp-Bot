@@ -5,11 +5,12 @@ const chatgptModule = {
   slides: [
     {
       text: [
-        "Hey there, Teacher! Welcome to your first AI tool lesson!\n\nLet's start with the most popular AI tool in the world right now - ChatGPT.\n\nChatGPT stands for Chat Generative Pre-trained Transformer. That sounds complicated - but here's the simple version:\n\nChatGPT is a computer program that can read what you type and reply in natural, human-like language. You talk to it like you would a colleague - and it responds intelligently!",
+        "Hey there, {name}! Welcome to your first AI tool lesson!\n\nLet's start with the most popular AI tool in the world right now - ChatGPT.\n\nChatGPT stands for Chat Generative Pre-trained Transformer. That sounds complicated - but here's the simple version:\n\nChatGPT is a computer program that can read what you type and reply in natural, human-like language. You talk to it like you would a colleague - and it responds intelligently!",
         "It was created by a company called OpenAI, and was launched to the public in November 2022. Within just 5 days of launching, it had over 1 million users - and today, over 100 million people use it every month worldwide! 🌍\n\nHere's what makes ChatGPT special:\n✅ It understands everyday language - no coding needed\n✅ It can hold a full conversation and remember context\n✅ It can write, explain, summarize, translate and create\n✅ It works on phones, tablets and computers\n✅ The basic version is completely FREE",
         "Think of it this way - imagine having a brilliant, well-read colleague sitting next to you 24 hours a day, 7 days a week, always ready to help you think, write, plan, and create. That's ChatGPT! 💡\n\nIn the next steps, we'll show you exactly how to set it up and use it in your classroom!\n\nReply *NEXT* to continue to Step 2 ➡️ | Reply *MENU* to go back to the main menu."
       ],
-      audio: "chatgpt-step1.mp3"
+      audio: "chatgpt-step1.mp3",
+      delivery: "text"
     },
     {
       text: [
@@ -18,7 +19,8 @@ const chatgptModule = {
         "HOW TO SET UP - STEP BY STEP:\n\n1️⃣ Open your browser and go to chat.openai.com OR download the ChatGPT app\n2️⃣ Click \"Sign Up\"\n3️⃣ Choose: Google, email, or Microsoft\n4️⃣ If email - check inbox for verification\n5️⃣ Enter your name and date of birth\n6️⃣ Click \"Start chatting\" - and you're in! 🎉",
         "TIPS FOR NIGERIAN TEACHERS:\n📶 You need internet to access ChatGPT\n💡 Use WiFi where possible to save data\n📲 The mobile app uses less data than the browser\n💾 Copy and save useful responses for offline use\n\nReply *NEXT* to continue to Step 3 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "chatgpt-step2.mp3"
+      audio: "chatgpt-step2.mp3",
+      delivery: "text"
     },
     {
       text: [
@@ -27,7 +29,8 @@ const chatgptModule = {
         "THE 5-PART PROMPT FORMULA:\n\n1️⃣ ROLE - Tell ChatGPT who to act as\n2️⃣ CONTEXT - Give background details\n3️⃣ TASK - State exactly what you want\n4️⃣ FORMAT - Specify how the answer should look\n5️⃣ CONSTRAINTS - Set limits",
         "YOUR FIRST PROMPT - TRY THIS NOW:\n\nOpen ChatGPT and type exactly this:\n\n💬 \"Act as an experienced Nigerian primary school teacher. Write a 40-minute lesson plan for Primary 5 on the topic of fractions. Include 3 learning objectives, a short introduction, step-by-step teaching points, one group activity, and 5 evaluation questions. Use simple, student-friendly language.\"\n\n3 GOLDEN RULES FOR PROMPTING:\n✅ Be specific - the more detail you give, the better\n✅ Be conversational - write like you're talking to a colleague\n✅ Iterate - if the first response isn't perfect, ask ChatGPT to improve it!\n\nReply *NEXT* to continue to Step 4 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "chatgpt-step3.mp3"
+      audio: "chatgpt-step3.mp3",
+      delivery: "both"
     },
     {
       text: [
@@ -36,14 +39,16 @@ const chatgptModule = {
         "4️⃣ DRAFTING PARENT EMAILS\nSave time writing professional, clear and friendly messages to parents.\n📌 Try: \"Write a friendly email to parents about the upcoming end-of-term exam schedule.\"\n\n5️⃣ DESIGNING CLASS ACTIVITIES\nGet ideas for group discussions, role-play scenarios, and problem-solving challenges.\n📌 Try: \"Suggest 3 fun group activities to teach supply and demand to JSS1 students.\"",
         "6️⃣ SUPPORTING DIVERSE LEARNERS\nAdapt content for slow learners or advanced students.\n📌 Try: \"Rewrite this passage on gravity for a struggling Primary 3 student.\"\n\n⚠️ Always review responses before using them in class - ChatGPT can occasionally make mistakes!\n\nReply *NEXT* to continue to Step 5 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "chatgpt-step4.mp3"
+      audio: "chatgpt-step4.mp3",
+      delivery: "audio"
     },
     {
       text: [
         "Great progress! Here's something every ChatGPT user needs to know: 💪\n\nChatGPT won't always give you a perfect response on the first try. That's completely normal! You can always ask it to improve. This is called ITERATING.\n\nGENERAL KNOWLEDGE - WHY RESPONSES ARE SOMETIMES POOR:\n🔸 Your prompt was too vague or too short\n🔸 You didn't specify the class level or subject clearly\n🔸 ChatGPT misunderstood what you wanted\n🔸 The response is too long, too short, or in the wrong format",
         "5 WAYS TO IMPROVE A BAD RESPONSE:\n\n1️⃣ Ask it to simplify:\n\"Make this simpler - use language suitable for Primary 4 pupils.\"\n\n2️⃣ Ask it to expand:\n\"This is too short. Please give more detail.\"\n\n3️⃣ Ask it to reformat:\n\"Please rewrite this as a numbered list.\"\n\n4️⃣ Ask it to focus:\n\"Focus only on the classroom activity part.\"\n\n5️⃣ Ask it to localize:\n\"Use Nigerian examples that students will relate to.\"\n\n🔑 KEY TIP: You don't need to start a new chat! Just type your improvement instruction right after the response.\n\nReply *NEXT* to continue to Step 6 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "chatgpt-step5.mp3"
+      audio: "chatgpt-step5.mp3",
+      delivery: "audio" // clarified 2026-09-28: audio only (was contradictory spec)
     },
     {
       text: [
@@ -51,7 +56,8 @@ const chatgptModule = {
         "6 KEY LIMITATIONS TO KNOW:\n\n⚠️ 1. It can produce wrong information (hallucinations) - Always verify key facts!\n\n⚠️ 2. It has a knowledge cutoff date - Don't rely on it for breaking news.\n\n⚠️ 3. It can reflect biases - Be mindful of this for sensitive topics.\n\n⚠️ 4. It cannot access your school's specific curriculum - Always check alignment.\n\n⚠️ 5. It has no memory between separate chats - Each new conversation starts fresh.\n\n⚠️ 6. It cannot replace your professional judgment - Those are yours alone.",
         "🔑 YOUR VERIFICATION CHECKLIST - before using any ChatGPT response in class:\n✅ Is the information factually correct?\n✅ Does it match your curriculum and learning objectives?\n✅ Is the language appropriate for your students' age?\n✅ Are the examples culturally relevant to your context?\n\nReply *NEXT* to continue to Step 7 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "chatgpt-step6.mp3"
+      audio: "chatgpt-step6.mp3",
+      delivery: "audio"
     },
     {
       text: [
@@ -60,7 +66,8 @@ const chatgptModule = {
         "📌 Notice how ChatGPT refines its response based on your instruction!\n\nTASK 3 - CREATE A CLASSROOM ACTIVITY 🎮\nStart a NEW chat and type:\n\n\"Suggest 3 fun group activities to help JSS2 students understand the human digestive system. Activities should work without internet or devices.\"\n\n✅ WELL DONE! When you've completed all 3 tasks, you're ready for the Quiz!",
         "Reply *QUIZ* to take the ChatGPT Quiz! | Reply *MENU* to go back to the main menu."
       ],
-      audio: "chatgpt-step7.mp3"
+      audio: "chatgpt-step7.mp3",
+      delivery: "text"
     },
     {
       text: [

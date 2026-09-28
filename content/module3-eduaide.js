@@ -5,11 +5,12 @@ const eduaideModule = {
   slides: [
     {
       text: [
-        "Welcome to Tool 3, Teacher! You've learned ChatGPT and Magic School AI - now meet a tool that takes AI assistance even deeper into your daily teaching life! 🎉\n\nMeet Edu Aide - the AI teaching assistant that goes beyond lesson planning to support the FULL cycle of teaching! 📚\n\nHere's the simple definition:\n\nEdu Aide is an AI-powered platform built exclusively for educators that helps teachers with the complete teaching workflow - from planning and preparation, all the way through to student feedback, behaviour management, and professional communication.",
+        "Welcome to Tool 3, {name}! You've learned ChatGPT and Magic School AI - now meet a tool that takes AI assistance even deeper into your daily teaching life! 🎉\n\nMeet Edu Aide - the AI teaching assistant that goes beyond lesson planning to support the FULL cycle of teaching! 📚\n\nHere's the simple definition:\n\nEdu Aide is an AI-powered platform built exclusively for educators that helps teachers with the complete teaching workflow - from planning and preparation, all the way through to student feedback, behaviour management, and professional communication.",
         "While Magic School AI gives you over 60 template tools, Edu Aide goes deeper - it focuses on producing highly personalised, context-aware content that feels less like a generic AI output and more like something a fellow experienced teacher wrote specifically for YOUR class.\n\n🎯 SPECIALITY - What Edu Aide Does Best:\n\n1️⃣ Deeply personalised student feedback - written comments that sound human, warm, and specific\n2️⃣ Behaviour management support - strategies and communication scripts for challenging classroom situations\n3️⃣ Complete report writing - full student reports, not just comments\n4️⃣ Wellbeing-aware teaching - content that considers the social and emotional needs of learners",
         "QUICK FACTS:\n🏫 Built exclusively for K-12 educators worldwide\n💬 Produces human-sounding, personalised content\n📝 Covers the FULL teaching cycle - not just lesson planning\n🆓 Free plan available with generous tool access\n⚡ No prompt engineering required - guided forms throughout\n🌍 Used by teachers across Africa, Asia, Europe, and the Americas\n🔒 Compliant with student data privacy standards\n\nThink of it this way: ChatGPT is your brainstorming partner. Magic School AI is your staffroom toolkit. Edu Aide is your personal teaching colleague! 💛\n\nReply *NEXT* to continue to Step 2 ➡️ | Reply *MENU* to go back to the main menu."
       ],
-      audio: "eduaide-step1.mp3"
+      audio: "eduaide-step1.mp3",
+      delivery: "both"
     },
     {
       text: [
@@ -18,7 +19,8 @@ const eduaideModule = {
         "WHAT YOU WILL SEE ON YOUR DASHBOARD:\n🗂️ Tools organised by teaching phase - Planning, Assessment, Communication, Behaviour\n🔍 A search bar to find any tool instantly\n📋 A content history showing everything you have generated\n⭐ A saved items section for your most useful outputs\n💬 An AI chat assistant for open-ended teaching questions",
         "TIPS FOR NIGERIAN TEACHERS:\n📶 Internet connection is required to use Edu Aide\n💡 Generate your week's materials in one session when connectivity is good\n💾 Copy and save outputs to your phone notes or a document for offline classroom use\n📲 Works smoothly on mobile browsers - no laptop required!\n🤝 Share generated materials with colleagues to multiply impact across your school\n\nReply *NEXT* to continue to Step 3 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "eduaide-step2.mp3"
+      audio: "eduaide-step2.mp3",
+      delivery: "text"
     },
     {
       text: [
@@ -28,7 +30,8 @@ const eduaideModule = {
         "3️⃣ BEHAVIOUR MANAGEMENT SCRIPTS 🗣️\nGet word-for-word scripts for handling difficult classroom situations - what to say and how to say it professionally.\n📌 How: Behaviour → Behaviour Script → Describe the situation → Generate!\n📌 Example situations:\n• A student is persistently disruptive during lessons\n• Two students have had a conflict\n• A student refuses to participate or engage\n• A student is showing signs of emotional distress\n✨ Why it's special: No other AI tool covers classroom behaviour communication this specifically",
         "4️⃣ PARENT BEHAVIOUR COMMUNICATION LETTERS 📩\nDraft professional, sensitive letters to parents about student behaviour - striking the right tone every time.\n📌 How: Behaviour → Parent Letter → Describe the behaviour concern and desired outcome → Generate!\n✨ Why it's special: Gets the balance between honest and diplomatic exactly right\n\nReply *NEXT* to continue to Step 4 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "eduaide-step3.mp3"
+      audio: "eduaide-step3.mp3",
+      delivery: "audio"
     },
     {
       text: [
@@ -39,13 +42,15 @@ const eduaideModule = {
         "4️⃣ GENERATE MULTIPLE VERSIONS AND COMBINE THE BEST PARTS\nIf one output is close but not perfect - generate again! Then take the best sentence from version one and the best structure from version two.\n\n5️⃣ LOCALISE EVERYTHING BEFORE USE\nJust like with Magic School AI - always edit outputs to include:\n📌 Nigerian names and contexts\n📌 Local examples and references\n📌 Curriculum-specific terminology",
         "6️⃣ ALWAYS VERIFY IMPORTANT DETAILS\nCheck generated content for accuracy before using. AI can make mistakes!\n\n⚠️ IMPORTANT: Behaviour scripts are starting points - not scripts to read word for word! Always adapt to your specific student and situation.\n\nReply *NEXT* to continue to Step 5 ➡️ | Reply *MENU* to go back."
       ],
-      audio: "eduaide-step4.mp3"
+      audio: "eduaide-step4.mp3",
+      delivery: "audio"
     },
     {
       text: [
         "🎯 Time for your Edu Aide Quiz, Teacher!\n\nYou have 7 questions to answer. Each question will appear one at a time with immediate feedback.\n\nReply *QUIZ* to start your quiz!\n\nReply *MENU* to go back to the main menu."
       ],
-      audio: "eduaide-step5.mp3"
+      audio: "eduaide-step5.mp3",
+      delivery: "text"
     }
   ],
   questions: [

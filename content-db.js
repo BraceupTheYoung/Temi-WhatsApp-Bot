@@ -27,6 +27,9 @@ const contentDB = {
     province: {
       prompt: "Please enter your state"
     },
+    country: {
+      prompt: "Please enter your country"
+    },
     community: {
       prompt: "Which of these best describes your community?",
       buttons: ["Rural", "Urban", "Township"]
@@ -41,7 +44,10 @@ const contentDB = {
     },
     language: {
       prompt: "What Language do you speak?",
-      options: ["English", "Yoruba", "Igbo", "Hausa"]
+      // NOTE: stored as a preference only — lesson content and audio are
+      // currently available in English. Do not treat selection as full
+      // translation support unless translated content actually exists.
+      options: ["English", "Yoruba", "Igbo", "Hausa", "French", "Arabic", "Spanish", "Portuguese", "German", "Russian", "Swahili", "Malay", "Italian"]
     }
   },
 

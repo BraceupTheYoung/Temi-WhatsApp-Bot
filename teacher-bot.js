@@ -296,10 +296,211 @@ const formatQuiz = (question, num) => {
   return text;
 };
 
+// FIX 1 — strict trigger: ONLY the exact phrase "hello temi"
+// (case-insensitive, extra whitespace collapsed) may onboard a new user.
+// Everything else (hi/hello/hey/emoji/sticker/voice/random text) = silence.
+const TRIGGER_PHRASE = "hello temi";
+const isTriggerPhrase = (body) => {
+  const normalized = (body || "").trim().toLowerCase().replace(/\s+/g, " ");
+  return normalized === TRIGGER_PHRASE;
+};
+
+// FIX 3 — a user counts as registered only once they COMPLETED registration
+// (full name + terms + all remaining fields through language/jobRole, which
+// are set together in the final step). Partial rows (e.g. name given but
+// email missing) do NOT count — they continue registration one field at a
+// time instead of being shown a progress card.
+const isRegistered = (userId) => {
+  const u = usersDB[userId];
+  return !!(u && u.fullName && u.agreedToTerms && (u.language || u.jobRole));
+};
+
+// GLOBAL PERSONALIZATION — single source for the user's display name.
+// Reads the current WhatsApp user's OWN registration record (fullName);
+// falls back to the generic "Teacher" when unavailable. Never returns
+// undefined, null, or an empty string. Every personalized message must
+// go through this helper — never read .fullName/.name inline.
+const getDisplayName = (userId) => {
+  const n = usersDB[userId]?.fullName;
+  return (typeof n === "string" && n.trim().length > 0) ? n.trim() : "Teacher";
+};
+
+// FIX 3 — returning-user progress card. Shows per-module ✅ / ⏳ / ⬜ lines,
+// resuming slide or quiz position where applicable.
+const buildReturningUserMessage = (userId) => {
+  const user = usersDB[userId] || {};
+  const name = getDisplayName(userId);
+  const topic = getTopic("ai-tools");
+  const progModules = (user.progress && user.progress["ai-tools"] && user.progress["ai-tools"].modules) || {};
+
+  let lines = [];
+  if (topic && topic.modules) {
+    topic.modules.forEach((mod, idx) => {
+      const prog = progModules[mod.id] || {};
+      const shortTitle = mod.title.replace(/^Module \d+:\s*/i, "");
+      if (prog.completed) {
+        lines.push(`✅ Module ${idx + 1}: ${shortTitle} — Completed`);
+      } else if (prog.slides && prog.slides.length > 0) {
+        const slides = prog.slides.filter((s) => s !== null && s !== undefined);
+        const step = slides.length > 0 ? Math.max(...slides) + 2 : 1;
+        const total = mod.slides?.length || "?";
+        lines.push(`⏳ Module ${idx + 1}: ${shortTitle} — In Progress (Step ${Math.min(step, total)} of ${total})`);
+      } else if (user.quizState && user.quizState.inQuiz && user.quizState.moduleId === mod.id) {
+        lines.push(`⏳ Module ${idx + 1}: ${shortTitle} — In Progress (Quiz, Q${(user.quizState.questionIndex || 0) + 1})`);
+      } else {
+        lines.push(`⬜ Module ${idx + 1}: ${shortTitle} — Not started`);
+      }
+    });
+  }
+
+  let msg = `Welcome back, ${name}! 👋\nHere's your progress:\n`;
+  msg += lines.join("\n");
+  msg += `\n\nReply CONTINUE to pick up where you left off\nReply MENU to see all modules`;
+  return msg;
+};
+
+// A cold-session record exists but registration was never completed.
+// Trigger must RESUME (never restart or duplicate) from the first gap.
+const hasPartialRegistration = (userId) => {
+  const u = usersDB[userId];
+  return !!(u && !isRegistered(userId) && (u.agreedToTerms || u.fullName || u.email || u.province || u.country || u.community || u.gender || u.age || u.language));
+};
+
+// Resume an incomplete registration with exactly ONE prompt for the first
+// missing step. Reads existing data only — never writes user input here,
+// so nothing is duplicated or reset.
+const resumePartialRegistration = async (message) => {
+  const userId = message.from;
+  const state = getUserState(userId);
+  if (!usersDB[userId]) {
+    usersDB[userId] = { createdAt: Date.now(), progress: {} };
+  }
+  const u = usersDB[userId];
+  const reg = getRegistration();
+  state.welcomeStep = null;
+  // Greet returning partial users by the name already on file (never
+  // before it is available — fullName missing means no greeting yet).
+  const backPrefix = (typeof u.fullName === "string" && u.fullName.trim().length > 0)
+    ? `Welcome back, ${u.fullName.trim()}! Let's continue where you left off.\n\n`
+    : "";
+  if (!u.agreedToTerms) {
+    state.stage = STAGES.WELCOME;
+    state.welcomeStep = "await_terms";
+    await message.reply(backPrefix + formatOptions(reg.terms));
+    return;
+  }
+  state.stage = STAGES.REGISTRATION;
+  if (!u.fullName) {
+    state.regField = "fullName";
+    await message.reply(reg.fullName.prompt);
+    return;
+  }
+  if (!u.email) {
+    state.regField = "email_input";
+    await message.reply(backPrefix + reg.email.prompt);
+    return;
+  }
+  if (!u.province) {
+    state.regField = "province";
+    await message.reply(backPrefix + formatOptions(reg.province));
+    return;
+  }
+  if (!u.country) {
+    state.regField = "country";
+    await message.reply(backPrefix + formatOptions(reg.country));
+    return;
+  }
+  if (!u.community) {
+    state.regField = "community";
+    await message.reply(backPrefix + formatOptions(reg.community));
+    return;
+  }
+  if (!u.gender) {
+    state.regField = "gender";
+    await message.reply(backPrefix + formatOptions(reg.gender));
+    return;
+  }
+  if (!u.age) {
+    state.regField = "age";
+    await message.reply(backPrefix + formatOptions(reg.age));
+    return;
+  }
+  state.regField = "language";
+  await message.reply(backPrefix + formatOptions(reg.language));
+};
+
+// FIX 3 — send the returning-user card and park in WELCOME awaiting
+// their CONTINUE / MENU choice. Never touches registration.
+const sendReturningUserMenu = async (message) => {
+  const userId = message.from;
+  const state = getUserState(userId);
+  state.stage = STAGES.WELCOME;
+  state.welcomeStep = "await_resume_choice";
+  state.regField = null;
+  await message.reply(buildReturningUserMessage(userId));
+};
+
+// FIX 3 — pick up exactly where the user left off:
+// quiz question > module slide > main menu > fresh start.
+const resumeWhereLeftOff = async (message) => {
+  const userId = message.from;
+  const state = getUserState(userId);
+  const topic = getTopic("ai-tools");
+
+  // 1) Mid-quiz → resume exact question
+  const qs = usersDB[userId]?.quizState;
+  if (qs && qs.inQuiz && topic) {
+    const module = topic.modules.find((m) => m.id === qs.moduleId);
+    if (module && module.questions && module.questions[qs.questionIndex]) {
+      state.currentTopic = "ai-tools";
+      state.currentModule = module;
+      state.currentQuizQuestion = qs.questionIndex;
+      state.quizAnswers = [];
+      state.stage = STAGES.QUIZ;
+      const q = module.questions[qs.questionIndex];
+      await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — resuming Quiz at Question ${qs.questionIndex + 1} of ${module.questions.length}\n\n`);
+      await message.reply(formatQuiz({ q: q.q, options: q.options, total: module.questions.length }, qs.questionIndex + 1));
+      return;
+    }
+  }
+
+  // 2) Mid-module → resume exact slide
+  const summary = getUserProgressSummary(userId);
+  if (summary && topic) {
+    const module = topic.modules[summary.currentModuleIndex];
+    if (module && module.slides && module.slides[summary.currentSlideIndex]) {
+      state.currentTopic = "ai-tools";
+      state.currentModule = module;
+      state.currentSlide = summary.currentSlideIndex;
+      state.stage = STAGES.LEARNING;
+      state.quizAnswers = [];
+      await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — Step ${summary.currentSlideIndex + 1} of ${module.slides.length}\n\n`);
+      await sendSlide(message, state, module.slides[state.currentSlide]);
+      return;
+    }
+    // 3) Some modules done but none in progress → main menu
+    if (summary.completedModules > 0) {
+      state.stage = STAGES.MAIN_MENU;
+      const mainMenu = getMainMenu();
+      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      return;
+    }
+  }
+
+  // 4) Fresh (registered but never started) → main menu
+  state.stage = STAGES.MAIN_MENU;
+  const mainMenu = getMainMenu();
+  await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+};
+
 const handleNewUser = async (message) => {
   const userId = message.from;
   const state = getUserState(userId);
   state.stage = STAGES.WELCOME;
+  // FIX 2 sequencing: Step 1 = welcome image + caption ONLY.
+  // Next message (any reply incl. 👍) advances to terms in handleWelcome.
+  state.welcomeStep = "await_ack";
+  state.regField = null;
   
   const welcome = getWelcome();
   let welcomeText = welcome.text;
@@ -341,94 +542,160 @@ const shouldShowWelcomeBack = (userId) => {
 
 const handleWelcome = async (message) => {
   const userId = message.from;
-  const msg = message.body.toLowerCase();
+  const msg = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
-  
-  if (shouldShowWelcomeBack(userId)) {
-    const summary = getUserProgressSummary(userId);
-    if (summary && summary.currentModuleName) {
-      const { currentModuleName, currentSlideIndex, completedModules, totalModules } = summary;
-      const totalSlides = summary.totalSlides || 8;
-      
-      let welcomeBackMsg = `👋 *Welcome back, Teacher!*\n\n`;
-      welcomeBackMsg += `You were on *${currentModuleName}*, Step ${currentSlideIndex + 1} of ${totalSlides}\n`;
-      welcomeBackMsg += `Progress: ${completedModules}/${totalModules} modules completed\n\n`;
-      welcomeBackMsg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
-      welcomeBackMsg += `Reply *CONTINUE* to pick up where you left off.\n`;
-      welcomeBackMsg += `Reply *START* to begin fresh.\n`;
-      welcomeBackMsg += `Reply *MENU* to go to main menu.`;
-      
-      state.stage = STAGES.WELCOME;
-      await message.reply(welcomeBackMsg);
-      return;
-    }
-  }
-  
-  if (msg.includes("continue") || msg.includes("welcome back") || msg.includes("pick up")) {
-    state.stage = STAGES.REGISTRATION;
-    state.regField = "fullName";
-    
-    const reg = getRegistration();
-    await message.reply(reg.fullName.prompt);
-    return;
-  }
-  
-  if (msg.includes("hello temi") || msg.includes("hello") || msg.includes("start") || msg === "hi" || msg === "hello" || msg === "1" || msg.includes("lets go") || msg.includes("begin") || msg === "continue") {
-    const summary = getUserProgressSummary(userId);
-    if (summary && summary.currentModuleIndex < summary.moduleNames.length) {
-      state.stage = STAGES.TOPIC_INTRO;
-      state.currentTopic = "ai-tools";
-      
-      const topic = getTopic("ai-tools");
-      const module = topic.modules[summary.currentModuleIndex];
-      state.currentModule = module;
-      state.currentSlide = summary.currentSlideIndex;
 
-      const slideText = module.slides[summary.currentSlideIndex]?.text;
-      const preview = (Array.isArray(slideText) ? slideText[0] : slideText)?.substring(0, 100) || "Continuing...";
-      await message.reply(`📚 *${module.title}*\n\nStep ${summary.currentSlideIndex + 1}: ${preview}\n\nReply *NEXT* to continue or *MENU* to go back.`);
-      state.stage = STAGES.LEARNING;
+  // FIX 3 — registered users never re-register. While parked on the
+  // progress card, ONLY exact "continue" / "menu" / "hello temi" get a
+  // reply. Any other text → silence (strict trigger: nothing else may
+  // wake the bot; "hello temi" always re-shows the card as the way back).
+  if (isRegistered(userId)) {
+    if (msg === "continue") {
+      await resumeWhereLeftOff(message);
       return;
     }
-  }
-  
-  if (msg === "menu" || msg === "help") {
-    const menuHelp = getMenuHelp();
-    await message.reply(menuHelp.helpText);
+    if (msg === "menu") {
+      state.stage = STAGES.MAIN_MENU;
+      const mainMenu = getMainMenu();
+      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      return;
+    }
+    // Parked on the progress card: "hello temi" repeat refreshes it,
+    // anything else unrecognised → silence, never a card re-send.
+    if (isTriggerPhrase(message.body || "")) {
+      await sendReturningUserMenu(message);
+      return;
+    }
+    console.log(`🔇 Ignoring "${message.body || ""}" from parked returning user ${userId} — reply CONTINUE, MENU, or "hello temi".`);
     return;
   }
-  
-  state.stage = STAGES.REGISTRATION;
-  state.regField = "fullName";
-  
+
+  // FIX 2 — strict one-at-a-time onboarding for new users.
+  // Step 1 already sent (welcome image). Any reply → Step 2 (terms).
+  const step = state.welcomeStep || "await_ack";
+
+  if (step === "await_ack") {
+    // Step 2: terms & conditions opt-in ONLY. Wait for reply before Step 3.
+    state.welcomeStep = "await_terms";
+    const reg = getRegistration();
+    await message.reply(formatOptions(reg.terms));
+    return;
+  }
+
+  if (step === "await_terms") {
+    // Step 2 reply → Step 3: accept → ask full name (or skip ahead to the
+    // first missing field when resuming a partial record); decline → re-ask.
+    if (msg === "yes" || msg === "1" || msg === "y" || msg === "opt in" || msg.includes("i agree")) {
+      if (!usersDB[userId]) {
+        usersDB[userId] = { createdAt: Date.now(), progress: {} };
+      }
+      usersDB[userId].agreedToTerms = true;
+      optedInUsers.add(userId);
+      saveData();
+      state.stage = STAGES.REGISTRATION;
+      state.welcomeStep = null;
+      const reg = getRegistration();
+      if (usersDB[userId].fullName) {
+        // Resuming: name already on file — continue at email, no duplicate.
+        state.regField = "email_input";
+        await message.reply(reg.email.prompt);
+      } else {
+        state.regField = "fullName";
+        await message.reply(reg.fullName.prompt);
+      }
+      return;
+    }
+    const reg = getRegistration();
+    await message.reply("You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue, or *NO* to stop.\n\n" + formatOptions(reg.terms));
+    return;
+  }
+
+  if (step === "await_resume_choice") {
+    // Parked card for a not-yet-registered record: same strict rule —
+    // exact CONTINUE / MENU only, "hello temi" refreshes via the global
+    // trigger check, anything else → silence.
+    if (msg === "continue") {
+      await resumeWhereLeftOff(message);
+      return;
+    }
+    if (msg === "menu") {
+      state.stage = STAGES.MAIN_MENU;
+      const mainMenu = getMainMenu();
+      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      return;
+    }
+    console.log(`🔇 Ignoring "${message.body || ""}" from parked user ${userId} — reply CONTINUE, MENU, or "hello temi".`);
+    return;
+  }
+
+  // Fallback: park on terms step (one message, then wait).
+  state.welcomeStep = "await_terms";
   const reg = getRegistration();
-  await message.reply(reg.fullName.prompt);
+  await message.reply(formatOptions(reg.terms));
 };
 
 const handleRegistration = async (message) => {
   const userId = message.from;
-  const msg = message.body.trim();
+  const msg = (message.body || "").trim();
   const state = getUserState(userId);
   const reg = getRegistration();
-  
+
+  // FIX 3 — fully registered users never re-register here.
+  if (isRegistered(userId)) {
+    await sendReturningUserMenu(message);
+    return;
+  }
+
   if (!usersDB[userId]) {
     usersDB[userId] = { createdAt: Date.now(), progress: {} };
+  }
+
+  // FIX 2 ordering guard: terms (Step 2) must precede full name (Step 3).
+  // Legacy in-memory states may land here without agreeing — bounce them
+  // back to the terms step instead of skipping ahead.
+  if (!usersDB[userId].agreedToTerms && state.regField !== "terms") {
+    state.stage = STAGES.WELCOME;
+    state.welcomeStep = "await_terms";
+    await message.reply(formatOptions(reg.terms));
+    return;
+  }
+
+  // Resume aid: unknown/null field → pick first missing field one at a time.
+  if (!state.regField) {
+    if (!usersDB[userId].fullName) state.regField = "fullName";
+    else if (!usersDB[userId].email) state.regField = "email_input";
+    else if (!usersDB[userId].province) state.regField = "province";
+    else if (!usersDB[userId].country) state.regField = "country";
+    else if (!usersDB[userId].community) state.regField = "community";
+    else if (!usersDB[userId].gender) state.regField = "gender";
+    else if (!usersDB[userId].age) state.regField = "age";
+    else state.regField = "language";
   }
   
   switch (state.regField) {
     case "fullName":
-      usersDB[userId].fullName = msg;
-      state.regField = "terms";
-      await message.reply(formatOptions(reg.terms));
+      // FIX 2 — Step 3 reply → Step 4 (email). One message, then wait.
+      // Personalization safety: never store a blank name (would render as
+      // empty/undefined downstream) — re-ask instead.
+      if (msg.trim().length === 0) {
+        await message.reply(reg.fullName.prompt);
+        break;
+      }
+      usersDB[userId].fullName = msg.trim();
+      state.regField = "email_input";
+      await message.reply(reg.email.prompt);
       break;
       
     case "terms":
+      // Legacy fallback — terms now live in WELCOME (Step 2), but honour
+      // any stale state pointing here.
       if (msg.toLowerCase() === "yes" || msg === "1") {
         usersDB[userId].agreedToTerms = true;
-        state.regField = "email_input";
-        await message.reply(reg.email.prompt);
+        optedInUsers.add(userId);
+        state.regField = usersDB[userId].fullName ? "email_input" : "fullName";
+        await message.reply(usersDB[userId].fullName ? reg.email.prompt : reg.fullName.prompt);
       } else {
-        await message.reply("You need to agree to the Terms and Conditions to continue.\n\nPlease reply *1* to agree and continue.");
+        await message.reply("You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue.");
       }
       break;
       
@@ -441,10 +708,36 @@ const handleRegistration = async (message) => {
     case "province":
       if (msg.trim().length > 0) {
         usersDB[userId].province = msg.trim();
-        state.regField = "community";
-        await message.reply(formatOptions(reg.community));
+        state.regField = "country";
+        await message.reply(formatOptions(reg.country));
       } else {
         await message.reply("Please enter your state.");
+      }
+      break;
+
+    case "country":
+      if (msg.trim().length > 0) {
+        usersDB[userId].country = msg.trim();
+        // Advance to the first still-missing field (later fields may
+        // already be saved on pre-existing partial records — never
+        // re-ask them).
+        const u = usersDB[userId];
+        const regNext = getRegistration();
+        if (!u.community) {
+          state.regField = "community";
+          await message.reply(formatOptions(regNext.community));
+        } else if (!u.gender) {
+          state.regField = "gender";
+          await message.reply(formatOptions(regNext.gender));
+        } else if (!u.age) {
+          state.regField = "age";
+          await message.reply(formatOptions(regNext.age));
+        } else {
+          state.regField = "language";
+          await message.reply(formatOptions(regNext.language));
+        }
+      } else {
+        await message.reply("Please enter your country.");
       }
       break;
       
@@ -487,16 +780,26 @@ const handleRegistration = async (message) => {
         usersDB[userId].language = reg.language.options[langIdx];
         usersDB[userId].jobRole = "Teacher";
         state.stage = STAGES.MAIN_MENU;
+        state.regField = null;
         optedInUsers.add(userId);
         saveData();
-        
-        const menuHelp = getMenuHelp();
-        await message.reply(menuHelp.greeting);
-        
+
+        // FIX 2 — one message only (no batching): greeting + menu combined,
+        // then wait for the user's reply.
         const mainMenu = getMainMenu();
-        await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+        await message.reply(`You're all set, ${usersDB[userId].fullName}! 🎉\n\n` + formatMenu(mainMenu, usersDB[userId]?.name));
       } else {
         await message.reply("Please enter a valid number from the list.");
+      }
+      break;
+    default:
+      // Unknown field — re-ask the first missing field (one message).
+      if (!usersDB[userId].fullName) {
+        state.regField = "fullName";
+        await message.reply(reg.fullName.prompt);
+      } else {
+        state.regField = "email_input";
+        await message.reply(reg.email.prompt);
       }
       break;
   }
@@ -520,7 +823,7 @@ const formatOptions = (field) => {
 
 const handleMainMenu = async (message) => {
   const userId = message.from;
-  const msg = message.body.toLowerCase();
+  const msg = (message.body || "").toLowerCase();
   const state = getUserState(userId);
   const mainMenu = getMainMenu();
   
@@ -552,7 +855,7 @@ const handleMainMenu = async (message) => {
       const { currentModuleIndex, currentSlideIndex, moduleNames, completedModules, totalModules, currentModuleName } = summary;
       const totalSlides = summary.totalSlides || 8;
       
-      let progressMsg = `📚 *YOUR PROGRESS*\n\n`;
+      let progressMsg = `📚 *YOUR PROGRESS, ${getDisplayName(userId)}*\n\n`;
       progressMsg += `You're on *${currentModuleName}*, Step ${currentSlideIndex + 1} of ${totalSlides}\n`;
       progressMsg += `Modules completed: ${completedModules}/${totalModules}\n\n`;
       progressMsg += `━━━━━━━━━━━━━━━━━━━━\n\n`;
@@ -596,7 +899,7 @@ const handleMainMenu = async (message) => {
     }
     
     let introText = topic.intro || "Welcome to this topic!";
-    introText = introText.replace("{name}", usersDB[userId].name || "Learner");
+    introText = introText.replace("{name}", getDisplayName(userId));
     
     const introMediaPath = path.join(MEDIA_DIR, "tools list  intro.jpeg");
     if (fs.existsSync(introMediaPath)) {
@@ -612,7 +915,7 @@ const handleMainMenu = async (message) => {
 
 const handleToolsList = async (message) => {
   const userId = message.from;
-  const msg = message.body.toLowerCase().trim();
+  const msg = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
   const mainMenu = getMainMenu();
   const topic = getTopic("ai-tools");
@@ -639,7 +942,7 @@ const handleToolsList = async (message) => {
 
 const handleToolsListSelection = async (message) => {
   const userId = message.from;
-  const msg = message.body.toLowerCase().trim();
+  const msg = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
   const mainMenu = getMainMenu();
   const topic = getTopic("ai-tools");
@@ -704,6 +1007,11 @@ const handleToolsListSelection = async (message) => {
     state.currentQuizQuestion = 0;
     state.quizAnswers = [];
     state.stage = STAGES.QUIZ;
+    // FIX 3 — persist quiz position for resume.
+    if (usersDB[userId]) {
+      usersDB[userId].quizState = { inQuiz: true, topicId: state.currentTopic || "ai-tools", moduleId: state.currentModule.id, questionIndex: 0 };
+      saveData();
+    }
     const firstQ = state.currentModule.questions[0];
     await message.reply(formatQuiz({
       q: firstQ.q,
@@ -718,7 +1026,7 @@ const handleToolsListSelection = async (message) => {
 
 const handleTopicIntro = async (message) => {
   const userId = message.from;
-  const userInput = message.body.toLowerCase().trim();
+  const userInput = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
   
   console.log("handleTopicIntro - currentTopic:", state.currentTopic);
@@ -828,20 +1136,37 @@ const sendSlide = async (message, state, slide) => {
     }
   };
 
+  // Per-step delivery config ("text" | "audio" | "both", default "both").
+  // Text-only steps never attach audio; audio-only steps never show text.
+  const delivery = slide.delivery || "both";
+  const sendText = delivery !== "audio";
+  let sendAudio = delivery !== "text";
+
   const textChunks = Array.isArray(slide.text) ? slide.text : [slide.text];
 
-  for (const chunk of textChunks) {
-    let text = chunk.replace("{name}", usersDB[userId].name || "Learner");
-    const ok = await safeReply(text);
-    if (!ok) return; // page dead — stop, don't pile on more sends
+  if (sendText) {
+    for (const chunk of textChunks) {
+      let text = chunk.replace("{name}", getDisplayName(userId));
+      const ok = await safeReply(text);
+      if (!ok) return; // page dead — stop, don't pile on more sends
+    }
   }
 
-  if (slide.audio) {
+  if (sendAudio && slide.audio) {
     try {
       const audioPath = path.join(MEDIA_DIR, slide.audio);
       if (fs.existsSync(audioPath)) {
         const media = await MessageMedia.fromFilePath(audioPath);
         await safeReply(media);
+      } else if (!sendText) {
+        // Graceful fallback: audio-only step whose file is missing must
+        // not strand the user with silence — deliver the text instead.
+        console.log(`Audio missing for audio-only step (${slide.audio}), falling back to text`);
+        for (const chunk of textChunks) {
+          let text = chunk.replace("{name}", getDisplayName(userId));
+          const ok = await safeReply(text);
+          if (!ok) return;
+        }
       }
     } catch (e) {
       console.error("Error sending audio:", String(e?.message || e).split("\n")[0]);
@@ -865,7 +1190,7 @@ const sendSlide = async (message, state, slide) => {
 
 const handleLearning = async (message) => {
   const userId = message.from;
-  const userInput = message.body.toLowerCase().trim();
+  const userInput = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
   const topic = getTopic(state.currentTopic);
   const module = state.currentModule;
@@ -895,6 +1220,12 @@ const handleLearning = async (message) => {
     state.currentQuizQuestion = 0;
     state.quizAnswers = [];
     state.stage = STAGES.QUIZ;
+    // FIX 3 — persist quiz position so a returning user resumes the
+    // exact question they left off.
+    if (usersDB[userId] && module) {
+      usersDB[userId].quizState = { inQuiz: true, topicId: state.currentTopic, moduleId: module.id, questionIndex: 0 };
+      saveData();
+    }
     const firstQ = module.questions[0];
     await message.reply(formatQuiz({
       q: firstQ.q,
@@ -924,7 +1255,7 @@ const handleLearning = async (message) => {
 
 const handleQuiz = async (message) => {
   const userId = message.from;
-  const userInput = message.body.trim();
+  const userInput = (message.body || "").trim();
   const state = getUserState(userId);
   const module = state.currentModule;
   
@@ -971,7 +1302,16 @@ const handleQuiz = async (message) => {
   await message.reply(responseText);
   
   state.currentQuizQuestion++;
-  
+  // FIX 3 — persist quiz position after every answer.
+  if (usersDB[userId]) {
+    if (state.currentQuizQuestion < module.questions.length) {
+      usersDB[userId].quizState = { inQuiz: true, topicId: state.currentTopic, moduleId: module.id, questionIndex: state.currentQuizQuestion };
+    } else {
+      delete usersDB[userId].quizState;
+    }
+    saveData();
+  }
+
   if (state.currentQuizQuestion < module.questions.length) {
     await message.reply("\n━━━━━━━━━━━━━━━━━━━━");
     const nextQ = module.questions[state.currentQuizQuestion];
@@ -986,13 +1326,13 @@ const handleQuiz = async (message) => {
     const percentage = Math.round((correct / total) * 100);
     
     let finalMessage = `━━━━━━━━━━━━━━━━━━━━\n`;
-    finalMessage += `*QUIZ COMPLETE!*\n\n`;
+    finalMessage += `*QUIZ COMPLETE, ${getDisplayName(userId)}!*\n\n`;
     finalMessage += `Final Score: ${correct}/${total} (${percentage}%)\n\n`;
     
     if (percentage === 100) {
-      finalMessage += `🎉 PERFECT SCORE! *Témí* says you're a star, Teacher! Amazing work! 🌟`;
+      finalMessage += `🎉 PERFECT SCORE! *Témí* says you're a star, ${getDisplayName(userId)}! Amazing work! 🌟`;
     } else if (percentage >= 80) {
-      finalMessage += `Excellent work, Teacher! *Témí* says you've really mastered this material! 🎉`;
+      finalMessage += `Excellent work, ${getDisplayName(userId)}! *Témí* says you've really mastered this material! 🎉`;
     } else if (percentage >= 60) {
       finalMessage += `Good job! You've shown solid understanding. Keep it up! 👍`;
     } else if (percentage >= 40) {
@@ -1062,7 +1402,7 @@ const handleQuiz = async (message) => {
 
 const handleCompleted = async (message) => {
   const userId = message.from;
-  const userInput = message.body.toLowerCase().trim();
+  const userInput = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
   const mainMenu = getMainMenu();
   const completion = getCompletion();
@@ -1101,7 +1441,7 @@ const handleCompleted = async (message) => {
   // confirming the name. Confirm with YES or reply with correct FULL NAME.
   // No email is ever asked — cert auto-generates and delivers in chat.
   if (state.awaitingCertConfirm) {
-    const input = message.body.trim();
+    const input = (message.body || "").trim();
 
     if (/^(menu|2|back)$/i.test(input) || input.toLowerCase().includes("back")) {
       state.awaitingCertConfirm = false;
@@ -1151,7 +1491,12 @@ const handleCompleted = async (message) => {
       state.currentSlide = 0;
       state.stage = STAGES.LEARNING;
       state.quizAnswers = [];
-      
+      // FIX 3 — leaving quiz context: clear stale quiz resume pointer.
+      if (usersDB[userId]?.quizState) {
+        delete usersDB[userId].quizState;
+        saveData();
+      }
+
       await sendSlide(message, state, nextModule.slides[0]);
     } else {
       // Full course already completed (incl. after certificate delivery) —
@@ -1204,6 +1549,11 @@ const handleCompleted = async (message) => {
       state.currentQuizQuestion = 0;
       state.quizAnswers = [];
       state.stage = STAGES.QUIZ;
+      // FIX 3 — persist quiz position for resume.
+      if (usersDB[userId]) {
+        usersDB[userId].quizState = { inQuiz: true, topicId: state.currentTopic || "ai-tools", moduleId: state.currentModule.id, questionIndex: 0 };
+        saveData();
+      }
       const firstQ = state.currentModule.questions[0];
       await message.reply(`📝 *Retaking Quiz for ${state.currentModule.title}*\n\n`);
       await message.reply(formatQuiz({
@@ -1327,7 +1677,9 @@ client.on("message", async (message) => {
 const handleIncomingMessage = async (message) => {
   try {
     const userId = message.from;
-    const userInput = message.body.trim().toLowerCase();
+    // Safe body read: stickers / voice notes / images may carry no text.
+    const rawBody = message.body || "";
+    const userInput = rawBody.trim().toLowerCase();
     const state = getUserState(userId);
 
     // Legacy migration: old CERT_REQUEST stage removed — route to COMPLETED.
@@ -1336,16 +1688,62 @@ const handleIncomingMessage = async (message) => {
     }
 
     updateLastActive(userId);
-    
-    console.log(`\n[${new Date().toISOString()}] Message from ${userId}: "${message.body}"`);
+
+    console.log(`\n[${new Date().toISOString()}] Message from ${userId}: "${rawBody}"`);
     console.log(`   Current stage: ${state.stage}`);
     console.log(`   Current topic: ${state.currentTopic}`);
-    
-    if (userInput === "menu") {
-      state.stage = STAGES.MAIN_MENU;
-      const mainMenu = getMainMenu();
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+
+    // STRICT TRIGGER (FIX 1): a cold user (stage NEW = no live session)
+    // gets a reply ONLY for the exact phrase "hello temi" — whether or
+    // not they are registered. Everything else (greetings, questions,
+    // menu/help/commands, stickers, voice notes) is met with total
+    // silence. Only the trigger below may wake the bot.
+    if (state.stage === STAGES.NEW && !isTriggerPhrase(rawBody)) {
+      console.log(`🔇 Ignoring "${rawBody}" from cold user ${userId} — trigger is "hello temi" only.`);
       return;
+    }
+
+    // FIX 3 — registered user typing the trigger again → progress card,
+    // never a registration restart. Checked before any stage routing.
+    if (isTriggerPhrase(rawBody) && isRegistered(userId)) {
+      await sendReturningUserMenu(message);
+      return;
+    }
+
+    // PARKED CARD (spec §4): a user waiting on the welcome-back progress
+    // card may only use exact CONTINUE / MENU (trigger handled above).
+    // Anything else — including help and other commands — stays silent.
+    // handleWelcome enforces the same rule; this guard stops the global
+    // menu/help blocks below from replying first.
+    if (state.stage === STAGES.WELCOME && state.welcomeStep === "await_resume_choice") {
+      if (userInput === "continue" || userInput === "menu") {
+        await handleWelcome(message);
+        return;
+      }
+      console.log(`🔇 Ignoring "${rawBody}" from parked user ${userId} — reply CONTINUE, MENU, or "hello temi".`);
+      return;
+    }
+
+    if (userInput === "menu") {
+      // FIX 3 — registered users get the menu, not registration.
+      if (state.stage === STAGES.NEW || state.stage === STAGES.WELCOME) {
+        if (isRegistered(userId)) {
+          state.stage = STAGES.MAIN_MENU;
+          const mainMenu = getMainMenu();
+          await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+          return;
+        }
+        // New users have no menu yet — silence except via trigger flow.
+        if (!isTriggerPhrase(rawBody)) {
+          console.log(`🔇 Ignoring "${rawBody}" from new user — trigger is "hello temi" only.`);
+          return;
+        }
+      } else {
+        state.stage = STAGES.MAIN_MENU;
+        const mainMenu = getMainMenu();
+        await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+        return;
+      }
     }
     
     if (userInput === "help") {
@@ -1355,8 +1753,24 @@ const handleIncomingMessage = async (message) => {
     }
     
     if (userInput === "continue" && state.stage !== STAGES.WELCOME && state.stage !== STAGES.NEW && usersDB[userId]?.progress) {
-      const summary = getUserProgressSummary(userId);
+      // FIX 3 — CONTINUE resumes quiz first, then module slide.
+      const qs = usersDB[userId]?.quizState;
       const topic = getTopic("ai-tools");
+      if (qs && qs.inQuiz && topic) {
+        const qModule = topic.modules.find((m) => m.id === qs.moduleId);
+        if (qModule && qModule.questions && qModule.questions[qs.questionIndex]) {
+          state.currentTopic = "ai-tools";
+          state.currentModule = qModule;
+          state.currentQuizQuestion = qs.questionIndex;
+          state.quizAnswers = [];
+          state.stage = STAGES.QUIZ;
+          const q = qModule.questions[qs.questionIndex];
+          await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${qModule.title}* — resuming Quiz at Question ${qs.questionIndex + 1} of ${qModule.questions.length}\n\n`);
+          await message.reply(formatQuiz({ q: q.q, options: q.options, total: qModule.questions.length }, qs.questionIndex + 1));
+          return;
+        }
+      }
+      const summary = getUserProgressSummary(userId);
       if (summary && topic) {
         const module = topic.modules[summary.currentModuleIndex];
         if (module) {
@@ -1366,7 +1780,7 @@ const handleIncomingMessage = async (message) => {
           state.stage = STAGES.LEARNING;
           state.quizAnswers = [];
           
-          await message.reply(`📚 *${module.title}* — Step ${summary.currentSlideIndex + 1}\n\n`);
+          await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — Step ${summary.currentSlideIndex + 1}\n\n`);
           if (module.slides && module.slides[state.currentSlide]) {
             await sendSlide(message, state, module.slides[state.currentSlide]);
           } else {
@@ -1379,6 +1793,16 @@ const handleIncomingMessage = async (message) => {
     }
     
     if (userInput === "/start" || userInput === "reset") {
+      // FIX 1+3 — /start & reset must NOT onboard strangers or
+      // re-register existing users. Registered → progress card.
+      if (isRegistered(userId)) {
+        await sendReturningUserMenu(message);
+        return;
+      }
+      if (!isTriggerPhrase(rawBody)) {
+        console.log(`🔇 Ignoring "${rawBody}" from new user — trigger is "hello temi" only.`);
+        return;
+      }
       if (!optedInUsers.has(userId)) {
         optedInUsers.add(userId);
         saveData();
@@ -1390,9 +1814,26 @@ const handleIncomingMessage = async (message) => {
     
     switch (state.stage) {
       case STAGES.NEW:
-        // A brand-new sender should get onboarded on ANY first message,
-        // not just the exact phrase "hello temi". The old code silently
-        // dropped everything else, which looked like "normal text, no reply".
+        // UNIVERSAL TRIGGER: ONLY exact "hello temi" (case-insensitive,
+        // whitespace-normalized) wakes a cold session — new, returning,
+        // partial, or post-restart. Anything else was already silenced by
+        // the gate at the top of handleIncomingMessage.
+        // - fully registered → exactly one welcome-back progress card.
+        // - partial record → resume at the first missing step (one prompt,
+        //   existing data preserved, never duplicated or reset).
+        // - no record → fresh welcome.
+        if (!isTriggerPhrase(rawBody)) {
+          console.log(`🔇 Ignoring "${rawBody}" from new user ${userId} — trigger is "hello temi" only.`);
+          break;
+        }
+        if (isRegistered(userId)) {
+          await sendReturningUserMenu(message);
+          break;
+        }
+        if (hasPartialRegistration(userId)) {
+          await resumePartialRegistration(message);
+          break;
+        }
         await handleNewUser(message);
         break;
         
