@@ -160,12 +160,20 @@ function fitToWidth(font, text, maxWidth, startSize, minSize) {
  * Generate a certificate PDF using the org template
  * (media/certificate-template.pdf, A4 landscape 842x595pt).
  *
- * Blanks mapped from the template (measured Dec 2025):
- *  - Name:   long centered underline (~y 241) → text baseline y=253, center x=431
- *  - Course: inline blank after "completed the" (~y 198) → baseline y=208, center x=536
- *  - Date:   inline blank after "on" (~y 182) → baseline y=191, center x=257
+ * Blanks mapped from the UPDATED org template (measured Sep 2026,
+ * PyMuPDF top-origin lines converted to PDF bottom-origin):
+ *  - Name:   wide centered underline (line y≈248.6) → baseline y=260, center x=454
+ *  - Course: long inline blank after "completed the" (line y≈193.6)
+ *            → baseline y=202, center x=585. Bold + prominent.
+ *  - Date:   inline blank after "course on" (line y≈167.7)
+ *            → baseline y=176, center x=344. Bold + legible.
  *  - Cert ID: tiny grey footer, bottom-center (org has no ID field).
+ *  - Signature: embedded in template (scribble above "Obasanjo
+ *    Fajemirokun" line) — never drawn over, preserved as-is.
  *
+ * Template body font is Poppins; overlay uses Helvetica-Bold
+ * (metrically compatible bold sans, always available via pdf-lib,
+ * so no missing-font risk) at bold weight for name/course/date.
  * Long names/courses/dates auto-shrink to fit their underline.
  *
  * @param {string} fullName - name as it should appear on certificate
@@ -207,37 +215,39 @@ async function generateCertificatePDF(fullName, opts = {}) {
   const ink = rgb(0.08, 0.08, 0.08);
   const green = rgb(0.04, 0.24, 0.09);
 
-  // 1) NAME — long centered underline (line y≈241)
+  // 1) NAME — wide centered underline (line y≈248.6, w≈350)
   const nameText = name.toUpperCase();
-  const nameSize = fitToWidth(bold, nameText, 280, 30, 13);
+  const nameSize = fitToWidth(bold, nameText, 330, 32, 14);
   const nameW = bold.widthOfTextAtSize(nameText, nameSize);
   page.drawText(nameText, {
-    x: 431 - nameW / 2,
-    y: 253 + yOff,
+    x: 454 - nameW / 2,
+    y: 260 + yOff,
     size: nameSize,
     font: bold,
     color: green,
   });
 
-  // 2) COURSE — inline blank ("completed the ___ course", line y≈199)
-  const courseSize = fitToWidth(regular, course, 190, 14, 9);
-  const courseW = regular.widthOfTextAtSize(course, courseSize);
+  // 2) COURSE — long inline blank ("completed the ___", line y≈193.6, w≈338).
+  // Bold + prominent, visual emphasis comparable to the name.
+  const courseSize = fitToWidth(bold, course, 320, 20, 10);
+  const courseW = bold.widthOfTextAtSize(course, courseSize);
   page.drawText(course, {
-    x: 536 - courseW / 2,
-    y: 204 + yOff,
+    x: 585 - courseW / 2,
+    y: 202 + yOff,
     size: courseSize,
-    font: regular,
+    font: bold,
     color: ink,
   });
 
-  // 3) DATE — inline blank ("on ___ demonstrating", line y≈182)
-  const dateSize = fitToWidth(regular, dateStr, 96, 12, 8);
-  const dateW = regular.widthOfTextAtSize(dateStr, dateSize);
+  // 3) DATE — inline blank ("course on ___ demonstrating", line y≈167.7, w≈198).
+  // Bold + legible from a distance.
+  const dateSize = fitToWidth(bold, dateStr, 182, 16, 10);
+  const dateW = bold.widthOfTextAtSize(dateStr, dateSize);
   page.drawText(dateStr, {
-    x: 257 - dateW / 2,
-    y: 186 + yOff,
+    x: 344 - dateW / 2,
+    y: 176 + yOff,
     size: dateSize,
-    font: regular,
+    font: bold,
     color: ink,
   });
 
