@@ -48,7 +48,7 @@ const chatgptModule = {
         "5 WAYS TO IMPROVE A BAD RESPONSE:\n\n1️⃣ Ask it to simplify:\n\"Make this simpler - use language suitable for Primary 4 pupils.\"\n\n2️⃣ Ask it to expand:\n\"This is too short. Please give more detail.\"\n\n3️⃣ Ask it to reformat:\n\"Please rewrite this as a numbered list.\"\n\n4️⃣ Ask it to focus:\n\"Focus only on the classroom activity part.\"\n\n5️⃣ Ask it to localize:\n\"Use Nigerian examples that students will relate to.\"\n\n🔑 KEY TIP: You don't need to start a new chat! Just type your improvement instruction right after the response.\n\nReply *NEXT* to continue to Step 6 ➡️ | Reply *MENU* to go back."
       ],
       audio: "chatgpt-step5.mp3",
-      delivery: "audio" // clarified 2026-09-28: audio only (was contradictory spec)
+      delivery: "text"
     },
     {
       text: [
