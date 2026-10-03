@@ -1250,6 +1250,13 @@ const handleLearning = async (message) => {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
     await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+  } else {
+    const isLastSlide = state.currentSlide === module.slides.length - 1;
+    if (isLastSlide) {
+      await message.reply("Invalid input. Reply *QUIZ* to take the quiz or *MENU* to go back.");
+    } else {
+      await message.reply("Invalid input. Reply *NEXT* to continue or *MENU* to go back.");
+    }
   }
 };
 
