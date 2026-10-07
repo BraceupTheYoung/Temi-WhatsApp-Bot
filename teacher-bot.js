@@ -2122,5 +2122,17 @@ process.on("unhandledRejection", (reason) => {
 
 startClient();
 
+// Admin dashboard (same EC2 process, live JSON). Never crashes the bot.
+try {
+  if (process.env.ADMIN_ENABLED !== "0") {
+    const { startAdminServer } = require("./admin-server.js");
+    startAdminServer();
+  } else {
+    console.log("📊 Admin dashboard disabled (ADMIN_ENABLED=0).");
+  }
+} catch (e) {
+  console.error("📊 Admin dashboard failed to start (bot unaffected):", e?.message || e);
+}
+
 console.log("🚀 Starting *Témí* — Learn AI. Teach Better...");
 console.log("⏳ Please wait while WhatsApp Web loads...");

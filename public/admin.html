@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Témí — Admin Dashboard</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Inter', -apple-system, sans-serif; background: #f0f2f5; color: #1a1a1a; min-height: 100vh; }
+    .header { background: #075e54; color: #fff; padding: 14px 20px; display: flex; align-items: center; justify-content: space-between; position: sticky; top: 0; z-index: 100; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+    .header h1 { font-size: 17px; font-weight: 600; }
+    .header .sub { font-size: 12px; opacity: .8; font-weight: 400; }
+    .header button { background: rgba(255,255,255,.15); color: #fff; border: 1px solid rgba(255,255,255,.3); border-radius: 8px; padding: 7px 14px; cursor: pointer; font-size: 13px; font-family: inherit; }
+    .header button:hover { background: rgba(255,255,255,.25); }
+    .wrap { max-width: 1100px; margin: 0 auto; padding: 20px 16px 60px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; margin-bottom: 18px; }
+    .card { background: #fff; border-radius: 14px; padding: 16px; box-shadow: 0 1px 4px rgba(0,0,0,.08); }
+    .card .n { font-size: 26px; font-weight: 700; color: #075e54; }
+    .card .l { font-size: 12px; color: #667781; margin-top: 2px; }
+    .panel { background: #fff; border-radius: 14px; padding: 18px; box-shadow: 0 1px 4px rgba(0,0,0,.08); margin-bottom: 16px; }
+    .filters { display: flex; flex-wrap: wrap; gap: 10px; }
+    .filters input, .filters select { padding: 10px 12px; border: 1.5px solid #d1d7db; border-radius: 10px; font-size: 14px; font-family: inherit; background: #fafafa; outline: none; }
+    .filters input:focus, .filters select:focus { border-color: #25d366; background: #fff; }
+    .filters input[type="search"] { flex: 2; min-width: 200px; }
+    .btn { padding: 10px 16px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer; }
+    .btn-primary { background: #25d366; color: #fff; }
+    .btn-primary:hover { background: #1da855; }
+    .btn-ghost { background: #eef2f4; color: #3b4a54; }
+    table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+    th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid #eef1f3; vertical-align: top; }
+    th { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; color: #667781; cursor: pointer; user-select: none; white-space: nowrap; }
+    th:hover { color: #075e54; }
+    tr:hover td { background: #f7faf8; }
+    .pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11.5px; font-weight: 600; }
+    .pill.reg { background: #e8f5e9; color: #1b7a3d; }
+    .pill.part { background: #fff8e1; color: #8a6d00; }
+    .bar { height: 6px; background: #e8ecef; border-radius: 4px; overflow: hidden; min-width: 70px; margin-top: 4px; }
+    .bar i { display: block; height: 100%; background: #25d366; }
+    .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: #667781; }
+    .login-wrap { max-width: 380px; margin: 8vh auto; background: #fff; border-radius: 16px; padding: 32px 28px; box-shadow: 0 1px 4px rgba(0,0,0,.1); text-align: center; }
+    .login-wrap h2 { color: #075e54; margin: 10px 0 4px; }
+    .login-wrap p { font-size: 13px; color: #667781; margin-bottom: 18px; }
+    .login-wrap input { width: 100%; padding: 12px 14px; border: 1.5px solid #d1d7db; border-radius: 10px; font-size: 15px; margin-bottom: 10px; font-family: inherit; }
+    .login-wrap .err { color: #e53935; font-size: 13px; min-height: 20px; margin-bottom: 6px; }
+    .modal-bg { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 200; align-items: flex-start; justify-content: center; padding: 40px 16px; overflow: auto; }
+    .modal-bg.show { display: flex; }
+    .modal { background: #fff; border-radius: 16px; padding: 24px; max-width: 560px; width: 100%; }
+    .modal h3 { color: #075e54; margin-bottom: 4px; }
+    .modal .meta { font-size: 13px; color: #667781; margin-bottom: 14px; }
+    .kv { display: grid; grid-template-columns: 140px 1fr; gap: 6px 12px; font-size: 13.5px; margin-bottom: 14px; }
+    .kv b { color: #3b4a54; font-weight: 600; }
+    .hidden { display: none !important; }
+    .breakdown { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .breakdown span { background: #f0f4f1; border-radius: 8px; padding: 3px 10px; font-size: 12px; }
+    @media (max-width: 700px) { table { font-size: 12.5px; } .kv { grid-template-columns: 110px 1fr; } }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div><h1>📚 Témí Admin <span class="sub">— user dashboard</span></h1></div>
+    <button id="logoutBtn" class="hidden">Log out</button>
+  </div>
+
+  <div class="wrap">
+    <div id="loginView" class="login-wrap hidden">
+      <div style="font-size:44px">🔐</div>
+      <h2>Admin login</h2>
+      <p>Restricted to authorized team members.</p>
+      <div class="err" id="loginErr"></div>
+      <input type="text" id="username" placeholder="Username" autocomplete="username">
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+      <button class="btn btn-primary" id="loginBtn" style="width:100%">Log in</button>
+    </div>
+
+    <div id="dashView" class="hidden">
+      <div class="cards" id="statCards"></div>
+      <div class="panel">
+        <div class="filters">
+          <input type="search" id="fSearch" placeholder="Search name, email, state…">
+          <select id="fStatus"><option value="">All statuses</option><option value="registered">Registered</option><option value="partial">Partial</option></select>
+          <select id="fGender"><option value="">All genders</option><option value="Female">Female</option><option value="Male">Male</option><option value="Prefer not to say">Prefer not to say</option></select>
+          <select id="fCommunity"><option value="">All communities</option><option value="Rural">Rural</option><option value="Urban">Urban</option><option value="Township">Township</option></select>
+          <input type="text" id="fProvince" placeholder="State filter" style="max-width:150px">
+          <button class="btn btn-primary" id="applyBtn">Apply</button>
+          <button class="btn btn-ghost" id="exportBtn">⬇ CSV</button>
+        </div>
+      </div>
+      <div class="panel">
+        <div style="overflow-x:auto">
+        <table>
+          <thead><tr>
+            <th data-sort="fullName">Name ⇅</th><th>Contact</th><th>State</th>
+            <th data-sort="status">Status ⇅</th><th data-sort="modulesCompleted">Progress ⇅</th>
+            <th data-sort="lastActive">Last active ⇅</th><th></th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        </div>
+        <div class="pager">
+          <button class="btn btn-ghost" id="prevBtn">← Prev</button>
+          <span id="pageInfo"></span>
+          <button class="btn btn-ghost" id="nextBtn">Next →</button>
+        </div>
+      </div>
+      <div class="panel" id="breakdowns"></div>
+    </div>
+  </div>
+
+  <div class="modal-bg" id="modalBg"><div class="modal" id="modalBody"></div></div>
+
+  <script src="/admin.js"></script>
+</body>
+</html>
