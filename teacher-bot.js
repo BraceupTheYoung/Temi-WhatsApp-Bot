@@ -69,25 +69,98 @@ const resolveChatId = async (message) => {
   return from;
 };
 
+// ---- Human-like global message pacing (anti-burst) ----
+// Lighter variant: 2-4s for consecutive chunks inside one logical payload
+// (sendSlide elements), 3-8s for new interactions / topic intros / quiz
+// transitions / certificates. All outbound goes through a GLOBAL serial
+// queue layered on top of the existing per-user queue, so concurrent users
+// can't fire simultaneously and trip API rate limits.
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+const CHUNK_MIN_MS = 2000;
+const CHUNK_MAX_MS = 4000;
+const HUMAN_MIN_MS = 3000;
+const HUMAN_MAX_MS = 8000;
+const TYPING_REASSERT_MS = 3500; // re-assert before WA's ~5s typing expiry
+
+const randomChunkDelay = () =>
+  Math.floor(CHUNK_MIN_MS + Math.random() * (CHUNK_MAX_MS - CHUNK_MIN_MS));
+const randomHumanDelay = () =>
+  Math.floor(HUMAN_MIN_MS + Math.random() * (HUMAN_MAX_MS - HUMAN_MIN_MS));
+
+// Typing indicator with re-assert loop: keeps "typing..." visible for the
+// full wait instead of expiring after ~5s. Falls back to bare delay if
+// getChat() fails. Always clears state afterwards so the indicator drops.
+const humanPace = async (message, ms) => {
+  let chat = null;
+  try {
+    chat = await message.getChat();
+  } catch {}
+  if (!chat) {
+    await delay(ms);
+    return ms;
+  }
+  let elapsed = 0;
+  while (elapsed < ms) {
+    try {
+      await chat.sendStateTyping();
+    } catch {}
+    const step = Math.min(TYPING_REASSERT_MS, ms - elapsed);
+    await delay(step);
+    elapsed += step;
+  }
+  try {
+    await chat.clearState();
+  } catch {}
+  return ms;
+};
+
+// Global serial send queue. Every outbound payload waits in line here;
+// worker (the awaiting handler) pulls serially. Chained off a single
+// promise so bursts across users collapse into spaced, sequential sends.
+let globalSendChain = Promise.resolve();
+const enqueueGlobalSend = (fn) => {
+  const next = globalSendChain.catch(() => {}).then(fn);
+  globalSendChain = next.catch(() => {});
+  return next;
+};
+
+// Central text sender: global-queue + typing + randomized delay + reply.
+// pace: "human" (3-8s, default) | "chunk" (2-4s, same-payload pieces).
+// NOTE: uses bracket access to avoid matching the automated
+// message.reply( -> pacedReply(message, migration below.
+const pacedReply = async (message, content, pace = "human", options) => {
+  return enqueueGlobalSend(async () => {
+    const waitMs = pace === "chunk" ? randomChunkDelay() : randomHumanDelay();
+    console.log(`⏳ Pacing (${pace}): waiting ${(waitMs / 1000).toFixed(1)}s with typing...`);
+    await humanPace(message, waitMs);
+    return await message["reply"](content, undefined, options);
+  });
+};
+
 // Central media sender. Cascade:
-//  1. 2s settle delay (fresh WA Web pages race media upload)
+//  1. global-queue + typing + randomized delay (replaces old fixed 2s)
 //  2. chat.sendMessage primary (store's own chat record)
 //  3. client.sendMessage(resolved @c.us) fallback
 // NOTE: MessageMedia has NO id field ({mimetype,data,filename,filesize} only
 // per MessageMedia.js) — the memoize/id throw comes from WA's own page-side
 // getters, so stamping media.id would be a no-op and is NOT done here.
-const sendMedia = async (message, media, options = {}) => {
-  console.log(`📤 Media send: file=${media?.filename} type=${media?.mimetype} b64len=${media?.data?.length || 0} caption=${(options.caption || "").length} chars`);
-  await new Promise((r) => setTimeout(r, 2000));
-  const chatId = await resolveChatId(message);
-  try {
-    const chat = await message.getChat();
-    console.log(`📤 Media via chat.sendMessage (chat=${chat?.id?._serialized || chatId})`);
-    return await chat.sendMessage(media, options);
-  } catch (e1) {
-    console.log(`📤 chat.sendMessage failed (${String(e1?.message || e1).split("\n")[0]}), fallback client.sendMessage(${chatId})`);
-    return await client.sendMessage(chatId, media, options);
-  }
+// pace: "human" (3-8s, default) | "chunk" (2-4s, in-slide media).
+const sendMedia = async (message, media, options = {}, pace = "human") => {
+  return enqueueGlobalSend(async () => {
+    const waitMs = pace === "chunk" ? randomChunkDelay() : randomHumanDelay();
+    console.log(`📤 Media send: file=${media?.filename} type=${media?.mimetype} b64len=${media?.data?.length || 0} caption=${(options.caption || "").length} chars (pacing ${pace} ${(waitMs / 1000).toFixed(1)}s)`);
+    await humanPace(message, waitMs);
+    const chatId = await resolveChatId(message);
+    try {
+      const chat = await message.getChat();
+      console.log(`📤 Media via chat.sendMessage (chat=${chat?.id?._serialized || chatId})`);
+      return await chat.sendMessage(media, options);
+    } catch (e1) {
+      console.log(`📤 chat.sendMessage failed (${String(e1?.message || e1).split("\n")[0]}), fallback client.sendMessage(${chatId})`);
+      return await client.sendMessage(chatId, media, options);
+    }
+  });
 };
 
 const client = new Client({
@@ -386,47 +459,47 @@ const resumePartialRegistration = async (message) => {
   if (!u.agreedToTerms) {
     state.stage = STAGES.WELCOME;
     state.welcomeStep = "await_terms";
-    await message.reply(backPrefix + formatOptions(reg.terms));
+    await pacedReply(message, backPrefix + formatOptions(reg.terms));
     return;
   }
   state.stage = STAGES.REGISTRATION;
   if (!u.fullName) {
     state.regField = "fullName";
-    await message.reply(reg.fullName.prompt);
+    await pacedReply(message, reg.fullName.prompt);
     return;
   }
   if (!u.email) {
     state.regField = "email_input";
-    await message.reply(backPrefix + reg.email.prompt);
+    await pacedReply(message, backPrefix + reg.email.prompt);
     return;
   }
   if (!u.province) {
     state.regField = "province";
-    await message.reply(backPrefix + formatOptions(reg.province));
+    await pacedReply(message, backPrefix + formatOptions(reg.province));
     return;
   }
   if (!u.country) {
     state.regField = "country";
-    await message.reply(backPrefix + formatOptions(reg.country));
+    await pacedReply(message, backPrefix + formatOptions(reg.country));
     return;
   }
   if (!u.community) {
     state.regField = "community";
-    await message.reply(backPrefix + formatOptions(reg.community));
+    await pacedReply(message, backPrefix + formatOptions(reg.community));
     return;
   }
   if (!u.gender) {
     state.regField = "gender";
-    await message.reply(backPrefix + formatOptions(reg.gender));
+    await pacedReply(message, backPrefix + formatOptions(reg.gender));
     return;
   }
   if (!u.age) {
     state.regField = "age";
-    await message.reply(backPrefix + formatOptions(reg.age));
+    await pacedReply(message, backPrefix + formatOptions(reg.age));
     return;
   }
   state.regField = "language";
-  await message.reply(backPrefix + formatOptions(reg.language));
+  await pacedReply(message, backPrefix + formatOptions(reg.language));
 };
 
 // FIX 3 — send the returning-user card and park in WELCOME awaiting
@@ -437,7 +510,7 @@ const sendReturningUserMenu = async (message) => {
   state.stage = STAGES.WELCOME;
   state.welcomeStep = "await_resume_choice";
   state.regField = null;
-  await message.reply(buildReturningUserMessage(userId));
+  await pacedReply(message, buildReturningUserMessage(userId));
 };
 
 // FIX 3 — pick up exactly where the user left off:
@@ -458,8 +531,8 @@ const resumeWhereLeftOff = async (message) => {
       state.quizAnswers = [];
       state.stage = STAGES.QUIZ;
       const q = module.questions[qs.questionIndex];
-      await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — resuming Quiz at Question ${qs.questionIndex + 1} of ${module.questions.length}\n\n`);
-      await message.reply(formatQuiz({ q: q.q, options: q.options, total: module.questions.length }, qs.questionIndex + 1));
+      await pacedReply(message, `Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — resuming Quiz at Question ${qs.questionIndex + 1} of ${module.questions.length}\n\n`);
+      await pacedReply(message, formatQuiz({ q: q.q, options: q.options, total: module.questions.length }, qs.questionIndex + 1));
       return;
     }
   }
@@ -474,7 +547,7 @@ const resumeWhereLeftOff = async (message) => {
       state.currentSlide = summary.currentSlideIndex;
       state.stage = STAGES.LEARNING;
       state.quizAnswers = [];
-      await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — Step ${summary.currentSlideIndex + 1} of ${module.slides.length}\n\n`);
+      await pacedReply(message, `Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — Step ${summary.currentSlideIndex + 1} of ${module.slides.length}\n\n`);
       await sendSlide(message, state, module.slides[state.currentSlide]);
       return;
     }
@@ -482,7 +555,7 @@ const resumeWhereLeftOff = async (message) => {
     if (summary.completedModules > 0) {
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
   }
@@ -490,7 +563,7 @@ const resumeWhereLeftOff = async (message) => {
   // 4) Fresh (registered but never started) → main menu
   state.stage = STAGES.MAIN_MENU;
   const mainMenu = getMainMenu();
-  await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+  await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
 };
 
 const handleNewUser = async (message) => {
@@ -529,7 +602,7 @@ const handleNewUser = async (message) => {
     }
   }
   
-  await message.reply(welcomeText);
+  await pacedReply(message, welcomeText);
 };
 
 const shouldShowWelcomeBack = (userId) => {
@@ -557,7 +630,7 @@ const handleWelcome = async (message) => {
     if (msg === "menu") {
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
     // Parked on the progress card: "hello temi" repeat refreshes it,
@@ -578,7 +651,7 @@ const handleWelcome = async (message) => {
     // Step 2: terms & conditions opt-in ONLY. Wait for reply before Step 3.
     state.welcomeStep = "await_terms";
     const reg = getRegistration();
-    await message.reply(formatOptions(reg.terms));
+    await pacedReply(message, formatOptions(reg.terms));
     return;
   }
 
@@ -598,15 +671,15 @@ const handleWelcome = async (message) => {
       if (usersDB[userId].fullName) {
         // Resuming: name already on file — continue at email, no duplicate.
         state.regField = "email_input";
-        await message.reply(reg.email.prompt);
+        await pacedReply(message, reg.email.prompt);
       } else {
         state.regField = "fullName";
-        await message.reply(reg.fullName.prompt);
+        await pacedReply(message, reg.fullName.prompt);
       }
       return;
     }
     const reg = getRegistration();
-    await message.reply("You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue, or *NO* to stop.\n\n" + formatOptions(reg.terms));
+    await pacedReply(message, "You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue, or *NO* to stop.\n\n" + formatOptions(reg.terms));
     return;
   }
 
@@ -621,7 +694,7 @@ const handleWelcome = async (message) => {
     if (msg === "menu") {
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
     console.log(`🔇 Ignoring "${message.body || ""}" from parked user ${userId} — reply CONTINUE, MENU, or "hello temi".`);
@@ -631,7 +704,7 @@ const handleWelcome = async (message) => {
   // Fallback: park on terms step (one message, then wait).
   state.welcomeStep = "await_terms";
   const reg = getRegistration();
-  await message.reply(formatOptions(reg.terms));
+  await pacedReply(message, formatOptions(reg.terms));
 };
 
 const handleRegistration = async (message) => {
@@ -656,7 +729,7 @@ const handleRegistration = async (message) => {
   if (!usersDB[userId].agreedToTerms && state.regField !== "terms") {
     state.stage = STAGES.WELCOME;
     state.welcomeStep = "await_terms";
-    await message.reply(formatOptions(reg.terms));
+    await pacedReply(message, formatOptions(reg.terms));
     return;
   }
 
@@ -678,12 +751,12 @@ const handleRegistration = async (message) => {
       // Personalization safety: never store a blank name (would render as
       // empty/undefined downstream) — re-ask instead.
       if (msg.trim().length === 0) {
-        await message.reply(reg.fullName.prompt);
+        await pacedReply(message, reg.fullName.prompt);
         break;
       }
       usersDB[userId].fullName = msg.trim();
       state.regField = "email_input";
-      await message.reply(reg.email.prompt);
+      await pacedReply(message, reg.email.prompt);
       break;
       
     case "terms":
@@ -693,25 +766,25 @@ const handleRegistration = async (message) => {
         usersDB[userId].agreedToTerms = true;
         optedInUsers.add(userId);
         state.regField = usersDB[userId].fullName ? "email_input" : "fullName";
-        await message.reply(usersDB[userId].fullName ? reg.email.prompt : reg.fullName.prompt);
+        await pacedReply(message, usersDB[userId].fullName ? reg.email.prompt : reg.fullName.prompt);
       } else {
-        await message.reply("You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue.");
+        await pacedReply(message, "You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue.");
       }
       break;
       
     case "email_input":
       usersDB[userId].email = msg;
       state.regField = "province";
-      await message.reply(formatOptions(reg.province));
+      await pacedReply(message, formatOptions(reg.province));
       break;
       
     case "province":
       if (msg.trim().length > 0) {
         usersDB[userId].province = msg.trim();
         state.regField = "country";
-        await message.reply(formatOptions(reg.country));
+        await pacedReply(message, formatOptions(reg.country));
       } else {
-        await message.reply("Please enter your state.");
+        await pacedReply(message, "Please enter your state.");
       }
       break;
 
@@ -725,19 +798,19 @@ const handleRegistration = async (message) => {
         const regNext = getRegistration();
         if (!u.community) {
           state.regField = "community";
-          await message.reply(formatOptions(regNext.community));
+          await pacedReply(message, formatOptions(regNext.community));
         } else if (!u.gender) {
           state.regField = "gender";
-          await message.reply(formatOptions(regNext.gender));
+          await pacedReply(message, formatOptions(regNext.gender));
         } else if (!u.age) {
           state.regField = "age";
-          await message.reply(formatOptions(regNext.age));
+          await pacedReply(message, formatOptions(regNext.age));
         } else {
           state.regField = "language";
-          await message.reply(formatOptions(regNext.language));
+          await pacedReply(message, formatOptions(regNext.language));
         }
       } else {
-        await message.reply("Please enter your country.");
+        await pacedReply(message, "Please enter your country.");
       }
       break;
       
@@ -746,9 +819,9 @@ const handleRegistration = async (message) => {
       if (communityIdx >= 0 && communityIdx < reg.community.buttons.length) {
         usersDB[userId].community = reg.community.buttons[communityIdx];
         state.regField = "gender";
-        await message.reply(formatOptions(reg.gender));
+        await pacedReply(message, formatOptions(reg.gender));
       } else {
-        await message.reply("Please enter a valid number from the list.");
+        await pacedReply(message, "Please enter a valid number from the list.");
       }
       break;
       
@@ -757,9 +830,9 @@ const handleRegistration = async (message) => {
       if (genderIdx >= 0 && genderIdx < reg.gender.buttons.length) {
         usersDB[userId].gender = reg.gender.buttons[genderIdx];
         state.regField = "age";
-        await message.reply(formatOptions(reg.age));
+        await pacedReply(message, formatOptions(reg.age));
       } else {
-        await message.reply("Please enter a valid number from the list.");
+        await pacedReply(message, "Please enter a valid number from the list.");
       }
       break;
       
@@ -768,9 +841,9 @@ const handleRegistration = async (message) => {
       if (ageIdx >= 0 && ageIdx < reg.age.options.length) {
         usersDB[userId].age = reg.age.options[ageIdx];
         state.regField = "language";
-        await message.reply(formatOptions(reg.language));
+        await pacedReply(message, formatOptions(reg.language));
       } else {
-        await message.reply("Please enter a valid number from the list.");
+        await pacedReply(message, "Please enter a valid number from the list.");
       }
       break;
       
@@ -787,19 +860,19 @@ const handleRegistration = async (message) => {
         // FIX 2 — one message only (no batching): greeting + menu combined,
         // then wait for the user's reply.
         const mainMenu = getMainMenu();
-        await message.reply(`You're all set, ${usersDB[userId].fullName}! 🎉\n\n` + formatMenu(mainMenu, usersDB[userId]?.name));
+        await pacedReply(message, `You're all set, ${usersDB[userId].fullName}! 🎉\n\n` + formatMenu(mainMenu, usersDB[userId]?.name));
       } else {
-        await message.reply("Please enter a valid number from the list.");
+        await pacedReply(message, "Please enter a valid number from the list.");
       }
       break;
     default:
       // Unknown field — re-ask the first missing field (one message).
       if (!usersDB[userId].fullName) {
         state.regField = "fullName";
-        await message.reply(reg.fullName.prompt);
+        await pacedReply(message, reg.fullName.prompt);
       } else {
         state.regField = "email_input";
-        await message.reply(reg.email.prompt);
+        await pacedReply(message, reg.email.prompt);
       }
       break;
   }
@@ -828,21 +901,21 @@ const handleMainMenu = async (message) => {
   const mainMenu = getMainMenu();
   
   if (msg === "menu") {
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
   if (msg === "help") {
     const menuHelp = getMenuHelp();
-    await message.reply(menuHelp.helpText);
+    await pacedReply(message, menuHelp.helpText);
     return;
   }
   
   // Handle quick responses (TOOLS LIST, PROMPT TEMPLATES, etc.)
   const quickResponse = getQuickResponse(msg);
   if (quickResponse) {
-    await message.reply(quickResponse);
-    await message.reply("\n" + formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, quickResponse);
+    await pacedReply(message, "\n" + formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
@@ -863,11 +936,11 @@ const handleMainMenu = async (message) => {
       progressMsg += `2. Start over (restart current module)\n`;
       progressMsg += `3. Main Menu`;
       
-      await message.reply(progressMsg);
+      await pacedReply(message, progressMsg);
       state.stage = STAGES.TOOLS_LIST_SELECTION;
       return;
     } else {
-      await message.reply(`📚 *MY PROGRESS*\n\nYou haven't started yet.\n\nReply *1* to begin learning!\nReply *MENU* to go back to main menu.`);
+      await pacedReply(message, `📚 *MY PROGRESS*\n\nYou haven't started yet.\n\nReply *1* to begin learning!\nReply *MENU* to go back to main menu.`);
       state.stage = STAGES.TOPIC_INTRO;
       return;
     }
@@ -877,7 +950,7 @@ const handleMainMenu = async (message) => {
   if (msg.includes("tools list") || msg.includes("skip") || msg === "admin tools") {
     const topic = getTopic("ai-tools");
     const modulesList = topic.modules.map((m, idx) => `${idx + 1}. ${m.title}`).join("\n");
-    await message.reply(`Which module would you like to access?\n\n${modulesList}\n\nReply with a number (1-3) to select a module.\nReply *MENU* to go back to main menu.`);
+    await pacedReply(message, `Which module would you like to access?\n\n${modulesList}\n\nReply with a number (1-3) to select a module.\nReply *MENU* to go back to main menu.`);
     state.stage = STAGES.TOOLS_LIST;
     return;
   }
@@ -892,9 +965,9 @@ const handleMainMenu = async (message) => {
     
     const topic = getTopic(topicId);
     if (!topic) {
-      await message.reply("Error: Topic not found. Please try again.");
+      await pacedReply(message, "Error: Topic not found. Please try again.");
       state.stage = STAGES.MAIN_MENU;
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
     
@@ -906,10 +979,10 @@ const handleMainMenu = async (message) => {
       const introMedia = MessageMedia.fromFilePath(introMediaPath);
       await sendMedia(message, introMedia, { caption: introText + "\n\nReply with *1* to start or *2* to go back." });
     } else {
-      await message.reply(introText + "\n\nReply with *1* to start or *2* to go back.");
+      await pacedReply(message, introText + "\n\nReply with *1* to start or *2* to go back.");
     }
   } else {
-    await message.reply("Please select a valid option (1-" + mainMenu.options.length + ").\n\n" + formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, "Please select a valid option (1-" + mainMenu.options.length + ").\n\n" + formatMenu(mainMenu, usersDB[userId]?.name));
   }
 };
 
@@ -922,7 +995,7 @@ const handleToolsList = async (message) => {
   
   if (msg === "menu") {
     state.stage = STAGES.MAIN_MENU;
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
@@ -932,12 +1005,12 @@ const handleToolsList = async (message) => {
     state.currentTopic = "ai-tools";
     state.currentModule = module;
     
-    await message.reply(`You selected: ${module.title}\n\nReply *1* to go to Step 1\nReply *2* to go to Quiz\nReply *MENU* to go back to main menu`);
+    await pacedReply(message, `You selected: ${module.title}\n\nReply *1* to go to Step 1\nReply *2* to go to Quiz\nReply *MENU* to go back to main menu`);
     state.stage = STAGES.TOOLS_LIST_SELECTION;
     return;
   }
   
-  await message.reply(`Please reply with a number (1-${topic.modules.length}) to select a module.\nReply *MENU* to go back to main menu.`);
+  await pacedReply(message, `Please reply with a number (1-${topic.modules.length}) to select a module.\nReply *MENU* to go back to main menu.`);
 };
 
 const handleToolsListSelection = async (message) => {
@@ -949,7 +1022,7 @@ const handleToolsListSelection = async (message) => {
   
   if (msg === "menu" || msg === "3") {
     state.stage = STAGES.MAIN_MENU;
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
@@ -972,7 +1045,7 @@ const handleToolsListSelection = async (message) => {
       }
       return;
     } else {
-      await message.reply("Starting fresh...");
+      await pacedReply(message, "Starting fresh...");
       state.currentSlide = 0;
       state.stage = STAGES.LEARNING;
       state.quizAnswers = [];
@@ -987,7 +1060,7 @@ const handleToolsListSelection = async (message) => {
       state.currentSlide = 0;
       state.stage = STAGES.LEARNING;
       state.quizAnswers = [];
-      await message.reply(`🔄 Restarting ${state.currentModule.title}...\n\nReply *NEXT* to continue through the slides.`);
+      await pacedReply(message, `🔄 Restarting ${state.currentModule.title}...\n\nReply *NEXT* to continue through the slides.`);
       await sendSlide(message, state, state.currentModule.slides[0]);
       return;
     }
@@ -1013,7 +1086,7 @@ const handleToolsListSelection = async (message) => {
       saveData();
     }
     const firstQ = state.currentModule.questions[0];
-    await message.reply(formatQuiz({
+    await pacedReply(message, formatQuiz({
       q: firstQ.q,
       options: firstQ.options,
       total: state.currentModule.questions.length
@@ -1021,7 +1094,7 @@ const handleToolsListSelection = async (message) => {
     return;
   }
   
-  await message.reply(`Please reply with a valid option.\nReply *MENU* to go back to main menu.`);
+  await pacedReply(message, `Please reply with a valid option.\nReply *MENU* to go back to main menu.`);
 };
 
 const handleTopicIntro = async (message) => {
@@ -1038,7 +1111,7 @@ const handleTopicIntro = async (message) => {
     console.log("ERROR: Topic is null for", state.currentTopic);
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await message.reply("Something went wrong. Returning to menu.\n\n" + formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, "Something went wrong. Returning to menu.\n\n" + formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
@@ -1047,7 +1120,7 @@ const handleTopicIntro = async (message) => {
   if (userInput === "menu" || userInput === "back to main menu" || userInput === "2") {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
@@ -1057,18 +1130,18 @@ const handleTopicIntro = async (message) => {
   } else {
     const quickResponse = getQuickResponse(userInput);
     if (quickResponse) {
-      await message.reply(quickResponse);
-      await message.reply("\nReply with *1* to start or *2* to go back.");
+      await pacedReply(message, quickResponse);
+      await pacedReply(message, "\nReply with *1* to start or *2* to go back.");
       return;
     }
   }
   
   if (userInput === "1" || userInput.includes("let's go") || userInput.includes("start") || userInput.includes("go")) {
     if (!topic.modules || topic.modules.length === 0) {
-      await message.reply("No content available for this topic yet. Returning to menu.");
+      await pacedReply(message, "No content available for this topic yet. Returning to menu.");
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
     
@@ -1076,10 +1149,10 @@ const handleTopicIntro = async (message) => {
     console.log("First module:", firstModule.id, "Slides:", firstModule.slides?.length);
     
     if (!firstModule.slides || firstModule.slides.length === 0) {
-      await message.reply("No slides found for this module. Returning to menu.");
+      await pacedReply(message, "No slides found for this module. Returning to menu.");
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
     
@@ -1092,27 +1165,24 @@ const handleTopicIntro = async (message) => {
     await sendSlide(message, state, firstModule.slides[0]);
   } else {
     // Invalid input - ask again
-    await message.reply("Please reply with *1* to start or *2* to go back.");
+    await pacedReply(message, "Please reply with *1* to start or *2* to go back.");
   }
 };
 
 const sendSlide = async (message, state, slide) => {
   const userId = message.from;
 
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
   // Returns false if the WhatsApp page died mid-send (needs re-init).
-  // Media goes via client.sendMessage (no quote) to avoid the
-  // wwebjs-step:addsend memoize/id error; text stays on message.reply.
+  // Same-payload chunks use "chunk" pacing (2-4s + typing) via the global
+  // queue — responsive but never sub-millisecond bursts.
   const safeReply = async (content, options) => {
     try {
       const isMedia = content && content.mimetype && content.data;
       if (isMedia) {
-        await sendMedia(message, content, options || {});
+        await sendMedia(message, content, options || {}, "chunk");
       } else {
-        await message.reply(content, undefined, options);
+        await pacedReply(message, content, "chunk", options);
       }
-      await sleep(600); // pace sends — hammering WA Web back-to-back kills the page
       return true;
     } catch (e) {
       const msg = String(e?.message || e || "");
@@ -1198,14 +1268,14 @@ const handleLearning = async (message) => {
   if (userInput === "menu" || userInput === "back to main menu") {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
   const quickResponse = getQuickResponse(userInput);
   if (quickResponse) {
-    await message.reply(quickResponse);
-    await message.reply("\nWhat would you like to do next?\n\nReply *NEXT* to continue or *MENU* to go back to the menu.");
+    await pacedReply(message, quickResponse);
+    await pacedReply(message, "\nWhat would you like to do next?\n\nReply *NEXT* to continue or *MENU* to go back to the menu.");
     return;
   }
   
@@ -1227,7 +1297,7 @@ const handleLearning = async (message) => {
       saveData();
     }
     const firstQ = module.questions[0];
-    await message.reply(formatQuiz({
+    await pacedReply(message, formatQuiz({
       q: firstQ.q,
       options: firstQ.options,
       total: module.questions.length
@@ -1249,13 +1319,13 @@ const handleLearning = async (message) => {
   } else if (userInput.includes("back")) {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
   } else {
     const isLastSlide = state.currentSlide === module.slides.length - 1;
     if (isLastSlide) {
-      await message.reply("Invalid input. Reply *QUIZ* to take the quiz or *MENU* to go back.");
+      await pacedReply(message, "Invalid input. Reply *QUIZ* to take the quiz or *MENU* to go back.");
     } else {
-      await message.reply("Invalid input. Reply *NEXT* to continue or *MENU* to go back.");
+      await pacedReply(message, "Invalid input. Reply *NEXT* to continue or *MENU* to go back.");
     }
   }
 };
@@ -1269,7 +1339,7 @@ const handleQuiz = async (message) => {
   if (userInput.toLowerCase() === "menu") {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
@@ -1277,7 +1347,7 @@ const handleQuiz = async (message) => {
   const maxAnswer = module.questions[state.currentQuizQuestion]?.options?.length || 4;
   
   if (isNaN(answer) || answer < 1 || answer > maxAnswer) {
-    await message.reply(`Please enter a valid number (1-${maxAnswer}).`);
+    await pacedReply(message, `Please enter a valid number (1-${maxAnswer}).`);
     return;
   }
   
@@ -1306,7 +1376,7 @@ const handleQuiz = async (message) => {
     responseText += `\n\n${currentQ.explanation}`;
   }
   
-  await message.reply(responseText);
+  await pacedReply(message, responseText);
   
   state.currentQuizQuestion++;
   // FIX 3 — persist quiz position after every answer.
@@ -1320,9 +1390,9 @@ const handleQuiz = async (message) => {
   }
 
   if (state.currentQuizQuestion < module.questions.length) {
-    await message.reply("\n━━━━━━━━━━━━━━━━━━━━");
+    await pacedReply(message, "\n━━━━━━━━━━━━━━━━━━━━");
     const nextQ = module.questions[state.currentQuizQuestion];
-    await message.reply(formatQuiz({
+    await pacedReply(message, formatQuiz({
       q: nextQ.q,
       options: nextQ.options,
       total: module.questions.length
@@ -1394,12 +1464,12 @@ const handleQuiz = async (message) => {
         await sendMedia(message, completionMedia, { caption: finalMessage });
       } else {
         console.log(`Completion media missing at ${mediaPath}, sending text only`);
-        await message.reply(finalMessage);
+        await pacedReply(message, finalMessage);
       }
     } catch (e) {
       console.log("Completion media send failed, sending text only:", e?.message || e);
       try {
-        await message.reply(finalMessage);
+        await pacedReply(message, finalMessage);
       } catch {}
     }
 
@@ -1416,7 +1486,7 @@ const handleCompleted = async (message) => {
 
   const sendCertificateNow = async (certName) => {
     try {
-      await message.reply(`⏳ Generating your certificate for *${certName}*...`);
+      await pacedReply(message, `⏳ Generating your certificate for *${certName}*...`);
       const { filePath, certId } = await generateCertificatePDF(certName);
       const media = MessageMedia.fromFilePath(filePath);
       await sendMedia(message, media, {
@@ -1435,12 +1505,12 @@ const handleCompleted = async (message) => {
       saveData();
       state.awaitingCertConfirm = false;
       state.stage = STAGES.COMPLETED;
-      await message.reply(`Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲`);
+      await pacedReply(message, `Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲`);
     } catch (e) {
       console.error("Certificate generation failed:", e);
       state.awaitingCertConfirm = false;
       state.stage = STAGES.COMPLETED;
-      await message.reply(`✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
+      await pacedReply(message, `✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
     }
   };
 
@@ -1453,7 +1523,7 @@ const handleCompleted = async (message) => {
     if (/^(menu|2|back)$/i.test(input) || input.toLowerCase().includes("back")) {
       state.awaitingCertConfirm = false;
       state.stage = STAGES.MAIN_MENU;
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
 
@@ -1471,7 +1541,7 @@ const handleCompleted = async (message) => {
       state.awaitingCertConfirm = false;
       // fall through to next-tool handling below
     } else {
-      await message.reply(`Please reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
+      await pacedReply(message, `Please reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
       return;
     }
     if (/^(next tool|next)$/i.test(certName)) {
@@ -1486,7 +1556,7 @@ const handleCompleted = async (message) => {
     const currentTopic = getTopic(state.currentTopic);
     if (!currentTopic || !currentTopic.modules) {
       state.stage = STAGES.MAIN_MENU;
-      await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
       return;
     }
     
@@ -1508,7 +1578,7 @@ const handleCompleted = async (message) => {
     } else {
       // Full course already completed (incl. after certificate delivery) —
       // single message, no old manual cert flow.
-      await message.reply(`You have completed the full course! Reply *MENU* for main menu or *SHARE* to share with colleagues`);
+      await pacedReply(message, `You have completed the full course! Reply *MENU* for main menu or *SHARE* to share with colleagues`);
     }
     return;
   }
@@ -1526,7 +1596,7 @@ const handleCompleted = async (message) => {
     if (!allModulesDone) {
       const doneCount = topicModules.filter((m) => progModules[m.id]?.completed).length;
       const totalCount = topicModules.length || 3;
-      await message.reply(`📚 *Not quite yet!*\n\nYou've completed ${doneCount}/${totalCount} modules.\n\nFinish all ${totalCount} modules first, then reply *DONE* to get your certificate.\n\nReply *NEXT TOOL* to continue ➡️\nReply *MENU* for main menu 🏠`);
+      await pacedReply(message, `📚 *Not quite yet!*\n\nYou've completed ${doneCount}/${totalCount} modules.\n\nFinish all ${totalCount} modules first, then reply *DONE* to get your certificate.\n\nReply *NEXT TOOL* to continue ➡️\nReply *MENU* for main menu 🏠`);
       return;
     }
 
@@ -1534,7 +1604,7 @@ const handleCompleted = async (message) => {
     const quizScore = usersDB[userId]?.progress[topicId]?.modules[moduleId]?.quizScore || 0;
     
     if (quizScore < 4) {
-      await message.reply(`📝 *Quiz Retake Required*\n\nYour quiz score was ${quizScore}/5. You need a score of *4 or higher* to get your certificate.\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
+      await pacedReply(message, `📝 *Quiz Retake Required*\n\nYour quiz score was ${quizScore}/5. You need a score of *4 or higher* to get your certificate.\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
       return;
     }
     
@@ -1543,9 +1613,9 @@ const handleCompleted = async (message) => {
     state.awaitingCertConfirm = true;
     state.stage = STAGES.COMPLETED;
     if (savedName) {
-      await message.reply(`📝 *Almost done!*\n\nWe have your name as: *${savedName}*\n\nReply *YES* to print your certificate with this name,\nor reply with your correct FULL NAME (e.g. *John Smith*).`);
+      await pacedReply(message, `📝 *Almost done!*\n\nWe have your name as: *${savedName}*\n\nReply *YES* to print your certificate with this name,\nor reply with your correct FULL NAME (e.g. *John Smith*).`);
     } else {
-      await message.reply(`📝 *Certificate Request*\n\nPlease reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
+      await pacedReply(message, `📝 *Certificate Request*\n\nPlease reply with your FULL NAME as you want it on the certificate.\n\nExample: *John Smith*`);
     }
     return;
   }
@@ -1562,8 +1632,8 @@ const handleCompleted = async (message) => {
         saveData();
       }
       const firstQ = state.currentModule.questions[0];
-      await message.reply(`📝 *Retaking Quiz for ${state.currentModule.title}*\n\n`);
-      await message.reply(formatQuiz({
+      await pacedReply(message, `📝 *Retaking Quiz for ${state.currentModule.title}*\n\n`);
+      await pacedReply(message, formatQuiz({
         q: firstQ.q,
         options: firstQ.options,
         total: state.currentModule.questions.length
@@ -1574,19 +1644,19 @@ const handleCompleted = async (message) => {
   
   // Handle "share" - get shareable message
   if (userInput === "share") {
-    await message.reply(completion.share);
+    await pacedReply(message, completion.share);
     return;
   }
   
   // Handle menu / back
   if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
     state.stage = STAGES.MAIN_MENU;
-    await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
     return;
   }
   
   // Default - show available options
-  await message.reply("Reply *NEXT TOOL* to continue to the next tool ➡️\nReply *DONE* to see your certificate 🎓\nReply *SHARE* to share with colleagues 📲\nReply *MENU* to go back to the main menu 🏠");
+  await pacedReply(message, "Reply *NEXT TOOL* to continue to the next tool ➡️\nReply *DONE* to see your certificate 🎓\nReply *SHARE* to share with colleagues 📲\nReply *MENU* to go back to the main menu 🏠");
 };
 
 client.on("qr", (qr) => {
@@ -1737,7 +1807,7 @@ const handleIncomingMessage = async (message) => {
         if (isRegistered(userId)) {
           state.stage = STAGES.MAIN_MENU;
           const mainMenu = getMainMenu();
-          await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+          await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
           return;
         }
         // New users have no menu yet — silence except via trigger flow.
@@ -1748,14 +1818,14 @@ const handleIncomingMessage = async (message) => {
       } else {
         state.stage = STAGES.MAIN_MENU;
         const mainMenu = getMainMenu();
-        await message.reply(formatMenu(mainMenu, usersDB[userId]?.name));
+        await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
         return;
       }
     }
     
     if (userInput === "help") {
       const menuHelp = getMenuHelp();
-      await message.reply(menuHelp.helpText);
+      await pacedReply(message, menuHelp.helpText);
       return;
     }
     
@@ -1772,8 +1842,8 @@ const handleIncomingMessage = async (message) => {
           state.quizAnswers = [];
           state.stage = STAGES.QUIZ;
           const q = qModule.questions[qs.questionIndex];
-          await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${qModule.title}* — resuming Quiz at Question ${qs.questionIndex + 1} of ${qModule.questions.length}\n\n`);
-          await message.reply(formatQuiz({ q: q.q, options: q.options, total: qModule.questions.length }, qs.questionIndex + 1));
+          await pacedReply(message, `Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${qModule.title}* — resuming Quiz at Question ${qs.questionIndex + 1} of ${qModule.questions.length}\n\n`);
+          await pacedReply(message, formatQuiz({ q: q.q, options: q.options, total: qModule.questions.length }, qs.questionIndex + 1));
           return;
         }
       }
@@ -1787,7 +1857,7 @@ const handleIncomingMessage = async (message) => {
           state.stage = STAGES.LEARNING;
           state.quizAnswers = [];
           
-          await message.reply(`Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — Step ${summary.currentSlideIndex + 1}\n\n`);
+          await pacedReply(message, `Welcome back, ${getDisplayName(userId)}! 👋\n\n📚 *${module.title}* — Step ${summary.currentSlideIndex + 1}\n\n`);
           if (module.slides && module.slides[state.currentSlide]) {
             await sendSlide(message, state, module.slides[state.currentSlide]);
           } else {
@@ -1888,7 +1958,7 @@ const handleIncomingMessage = async (message) => {
     console.error("Error handling message:", error);
     console.error("Stack:", error.stack);
     try {
-      await message.reply("Sorry, I encountered an error. Please try again.");
+      await pacedReply(message, "Sorry, I encountered an error. Please try again.");
     } catch (e) {
       console.error("Failed to send error message:", e);
     }
@@ -1953,9 +2023,9 @@ const startClient = () => {
     await destroyClient();
     initRetries++;
     if (initRetries <= MAX_INIT_RETRIES) {
-      const delay = 5000 * initRetries;
-      console.log(`🔄 Retrying initialize (${initRetries}/${MAX_INIT_RETRIES}) in ${delay / 1000}s...`);
-      setTimeout(startClient, delay);
+      const retryDelay = 5000 * initRetries;
+      console.log(`🔄 Retrying initialize (${initRetries}/${MAX_INIT_RETRIES}) in ${retryDelay / 1000}s...`);
+      setTimeout(startClient, retryDelay);
     } else {
       console.error("💥 Max retries reached. Fixes to try:");
       console.error("   1. taskkill /F /IM chrome.exe  (kill zombie Chrome holding the lock)");
