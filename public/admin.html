@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Témí — Admin Dashboard</title>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Inter', -apple-system, sans-serif; background: #f0f2f5; color: #1a1a1a; min-height: 100vh; }
@@ -53,6 +54,11 @@
     .hidden { display: none !important; }
     .breakdown { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
     .breakdown span { background: #f0f4f1; border-radius: 8px; padding: 3px 10px; font-size: 12px; }
+    .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; margin-bottom: 14px; }
+    .chart-box { background: #fafcfb; border: 1px solid #eef1f3; border-radius: 12px; padding: 12px; }
+    .chart-box b { font-size: 13px; color: #075e54; display: block; margin-bottom: 8px; }
+    .chart-box canvas { max-height: 220px; }
+    .chart-empty { font-size: 12px; color: #667781; }
     @media (max-width: 700px) { table { font-size: 12.5px; } .kv { grid-template-columns: 110px 1fr; } }
   </style>
 </head>
@@ -82,6 +88,7 @@
           <select id="fGender"><option value="">All genders</option><option value="Female">Female</option><option value="Male">Male</option><option value="Prefer not to say">Prefer not to say</option></select>
           <select id="fCommunity"><option value="">All communities</option><option value="Rural">Rural</option><option value="Urban">Urban</option><option value="Township">Township</option></select>
           <input type="text" id="fProvince" placeholder="State filter" style="max-width:150px">
+          <select id="fCountry"><option value="">All countries</option><option value="Nigeria">Nigeria</option><option value="Other">Other</option></select>
           <button class="btn btn-primary" id="applyBtn">Apply</button>
           <button class="btn btn-ghost" id="exportBtn">⬇ CSV</button>
         </div>
@@ -90,8 +97,9 @@
         <div style="overflow-x:auto">
         <table>
           <thead><tr>
-            <th data-sort="fullName">Name ⇅</th><th>Contact</th><th>State</th>
+            <th data-sort="fullName">Name ⇅</th><th>Contact</th><th>State</th><th data-sort="country">Country ⇅</th>
             <th data-sort="status">Status ⇅</th><th data-sort="modulesCompleted">Progress ⇅</th>
+            <th>Feedback</th>
             <th data-sort="lastActive">Last active ⇅</th><th></th>
           </tr></thead>
           <tbody id="rows"></tbody>
@@ -103,7 +111,17 @@
           <button class="btn btn-ghost" id="nextBtn">Next →</button>
         </div>
       </div>
-      <div class="panel" id="breakdowns"></div>
+      <div class="panel" id="breakdowns">
+        <b style="font-size:13px;color:#075e54">BREAKDOWNS</b>
+        <div class="charts" style="margin-top:8px">
+          <div class="chart-box"><b>Country</b><canvas id="chCountry"></canvas></div>
+          <div class="chart-box"><b>State</b><canvas id="chProvince"></canvas></div>
+          <div class="chart-box"><b>Gender</b><canvas id="chGender"></canvas></div>
+          <div class="chart-box"><b>Age</b><canvas id="chAge"></canvas></div>
+          <div class="chart-box"><b>Community</b><canvas id="chCommunity"></canvas></div>
+        </div>
+        <div id="breakdownPills"></div>
+      </div>
     </div>
   </div>
 

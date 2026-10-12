@@ -10,6 +10,9 @@ const { generateCertificatePDF } = require("./certificate.js");
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 const MEDIA_DIR = path.join(__dirname, "media");
 
+// Placeholder — swap in the real Google Form URL later.
+const FEEDBACK_FORM_URL = "[INSERT_GOOGLE_FORM_LINK_HERE]";
+
 // NOTE: version pin REMOVED (2026-09-22) — the pinned 2.3000.1047079153 HTML
 // shell still fetches (200) but its JS bundles no longer boot window.Debug,
 // so initialize() crashes with "Cannot read properties of undefined (reading
@@ -211,10 +214,11 @@ const STAGES = {
   TOOLS_LIST_SELECTION: "tools_list_selection",
   LEARNING: "learning",
   QUIZ: "quiz",
-  COMPLETED: "completed"
+  COMPLETED: "completed",
+  AWAITING_FEEDBACK: "awaiting_feedback"
 };
 
-const REG_FIELDS = ["fullName", "terms", "email_input", "province", "community", "gender", "age", "language", "jobRole"];
+const REG_FIELDS = ["fullName", "terms", "email_input", "province", "country", "community", "gender", "age", "language", "jobRole"];
 
 const userStates = new Map();
 let optedInUsers = new Set();
@@ -1504,15 +1508,57 @@ const handleCompleted = async (message) => {
       });
       saveData();
       state.awaitingCertConfirm = false;
-      state.stage = STAGES.COMPLETED;
+      state.stage = STAGES.AWAITING_FEEDBACK;
       await pacedReply(message, `Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲`);
+      await pacedReply(message, `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`);
     } catch (e) {
       console.error("Certificate generation failed:", e);
       state.awaitingCertConfirm = false;
-      state.stage = STAGES.COMPLETED;
+      state.stage = STAGES.AWAITING_FEEDBACK;
       await pacedReply(message, `✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
+      await pacedReply(message, `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`);
     }
   };
+
+const handleFeedback = async (message) => {
+  const userId = message.from;
+  const rawInput = (message.body || "").trim();
+  const userInput = rawInput.toLowerCase();
+  const state = getUserState(userId);
+  const mainMenu = getMainMenu();
+  const completion = getCompletion();
+
+  // Honor commands instead of capturing them as feedback (skip-and-continue).
+  if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
+    state.stage = STAGES.MAIN_MENU;
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    return;
+  }
+  if (userInput === "share") {
+    state.stage = STAGES.COMPLETED;
+    await pacedReply(message, completion.share);
+    return;
+  }
+  if (userInput === "skip" || userInput === "no" || userInput === "n") {
+    state.stage = STAGES.MAIN_MENU;
+    await pacedReply(message, `No problem — thank you for completing the course! 🙏`);
+    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    return;
+  }
+  if (userInput.length === 0) {
+    await pacedReply(message, `Please type your feedback, or type *SKIP* to skip.\nYou can also use this form if you prefer:\n${FEEDBACK_FORM_URL}`);
+    return;
+  }
+  // Capture the reply as feedback (truncate to protect JSON/CSV).
+  if (!usersDB[userId]) {
+    usersDB[userId] = { createdAt: Date.now(), progress: {} };
+  }
+  usersDB[userId].feedback = { text: rawInput.slice(0, 1000), at: new Date().toISOString() };
+  saveData();
+  state.stage = STAGES.MAIN_MENU;
+  await pacedReply(message, `Thank you so much for your feedback! 🙏 It helps us make *Témí* better for teachers like you. 💛`);
+  await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+};
 
   // SINGLE certificate flow: user typed DONE after Module 3 and is now
   // confirming the name. Confirm with YES or reply with correct FULL NAME.
@@ -1948,6 +1994,10 @@ const handleIncomingMessage = async (message) => {
         
       case STAGES.COMPLETED:
         await handleCompleted(message);
+        break;
+
+      case STAGES.AWAITING_FEEDBACK:
+        await handleFeedback(message);
         break;
         
       default:

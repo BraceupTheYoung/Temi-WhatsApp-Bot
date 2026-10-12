@@ -32,6 +32,24 @@ function maskId(id) {
   return `…${local.slice(-4)}`;
 }
 
+// Dashboard grouping normalization: trim, collapse whitespace, Title Case.
+// State variant additionally strips the word "state" so "Oyo State", "oyo"
+// and "OYo" all group as "Oyo". City names (e.g. "Ibadan") are intentionally
+// left as-is — no city→state dictionary (per product decision).
+function toTitleCase(s) {
+  return String(s).toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function normalizeState(v) {
+  const s = String(v ?? "").trim().replace(/\bstate\b/gi, "").replace(/\s+/g, " ").trim();
+  return s ? toTitleCase(s) : "";
+}
+
+function normalizeLabel(v) {
+  const s = String(v ?? "").trim().replace(/\s+/g, " ");
+  return s ? toTitleCase(s) : "";
+}
+
 function summarizeProgress(user) {
   const modules = (user.progress && user.progress["ai-tools"] && user.progress["ai-tools"].modules) || {};
   const ids = Object.keys(modules);
@@ -53,6 +71,9 @@ function toRow(id, u) {
   const registered = isRegisteredUser(u);
   const hasAnyField =
     !!(u && (u.fullName || u.email || u.province || u.country || u.community || u.gender || u.age || u.language));
+  const feedbackText = typeof (u && u.feedback) === "string"
+    ? u.feedback
+    : ((u && u.feedback && u.feedback.text) || "");
   return {
     id,
     maskedId: maskId(id),
@@ -72,6 +93,8 @@ function toRow(id, u) {
     progressPct: Math.round((prog.completed / prog.totalModules) * 100),
     quizScores: prog.quizScores,
     certificates: Array.isArray(u.certificateRequests) ? u.certificateRequests.length : 0,
+    feedback: feedbackText,
+    feedbackAt: (u && u.feedback && u.feedback.at) || null,
     inQuiz: !!(u.quizState && u.quizState.inQuiz),
     createdAt: u.createdAt || null,
     lastActive: u.lastActive || null,
@@ -92,20 +115,27 @@ function applyFilters(rows, f) {
   const q = (f.search || "").trim().toLowerCase();
   return rows.filter((r) => {
     if (f.status && r.status !== f.status) return false;
-    if (f.province && (r.province || "").toLowerCase() !== f.province.toLowerCase()) return false;
+    if (f.province && normalizeState(r.province) !== normalizeState(f.province)) return false;
+    if (f.country) {
+      if (f.country === "__other__") {
+        // "Other" bucket: any non-empty country that isn't Nigeria.
+        const co = normalizeLabel(r.country);
+        if (!co || co === "Nigeria") return false;
+      } else if (normalizeLabel(r.country) !== normalizeLabel(f.country)) return false;
+    }
     if (f.gender && (r.gender || "").toLowerCase() !== f.gender.toLowerCase()) return false;
     if (f.community && (r.community || "").toLowerCase() !== f.community.toLowerCase()) return false;
     if (f.optedIn === "yes" && !r.optedIn) return false;
     if (f.optedIn === "no" && r.optedIn) return false;
     if (q) {
-      const hay = `${r.fullName} ${r.email} ${r.province} ${r.country} ${r.id}`.toLowerCase();
+      const hay = `${r.fullName} ${r.email} ${r.province} ${r.country} ${r.id} ${r.feedback || ""}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
   });
 }
 
-const SORT_KEYS = new Set(["fullName", "province", "createdAt", "lastActive", "modulesCompleted", "status"]);
+const SORT_KEYS = new Set(["fullName", "province", "country", "createdAt", "lastActive", "modulesCompleted", "status"]);
 
 function searchUsers(filters = {}) {
   const limit = Math.min(Math.max(parseInt(filters.limit, 10) || 50, 1), 200);
@@ -145,6 +175,7 @@ function getUserDetail(id) {
 function getStats() {
   const rows = getAllRows();
   const byProvince = {};
+  const byCountry = {};
   const byGender = {};
   const byAge = {};
   const byCommunity = {};
@@ -159,10 +190,18 @@ function getStats() {
     if (r.modulesCompleted >= r.totalModules) completedAll++;
     certsIssued += r.certificates;
     if (r.inQuiz) inQuiz++;
-    if (r.province) byProvince[r.province] = (byProvince[r.province] || 0) + 1;
-    if (r.gender) byGender[r.gender] = (byGender[r.gender] || 0) + 1;
-    if (r.age) byAge[r.age] = (byAge[r.age] || 0) + 1;
-    if (r.community) byCommunity[r.community] = (byCommunity[r.community] || 0) + 1;
+    // Grouped on NORMALIZED values so "oyo"/"OYo"/"Oyo State" merge.
+    // Raw user input is preserved in rows/CSV; only aggregation is cleaned.
+    const st = normalizeState(r.province);
+    const co = normalizeLabel(r.country);
+    const ge = normalizeLabel(r.gender);
+    const ag = normalizeLabel(r.age);
+    const cm = normalizeLabel(r.community);
+    if (st) byProvince[st] = (byProvince[st] || 0) + 1;
+    if (co) byCountry[co] = (byCountry[co] || 0) + 1;
+    if (ge) byGender[ge] = (byGender[ge] || 0) + 1;
+    if (ag) byAge[ag] = (byAge[ag] || 0) + 1;
+    if (cm) byCommunity[cm] = (byCommunity[cm] || 0) + 1;
   }
   const top = (obj) =>
     Object.entries(obj)
@@ -178,6 +217,7 @@ function getStats() {
     certsIssued,
     inQuiz,
     byProvince: top(byProvince),
+    byCountry: top(byCountry),
     byGender: top(byGender),
     byAge: top(byAge),
     byCommunity: top(byCommunity),
@@ -194,7 +234,7 @@ function usersToCsv(rows) {
   const header = [
     "maskedId", "fullName", "email", "province", "country", "community",
     "gender", "age", "language", "jobRole", "status", "optedIn",
-    "modulesCompleted", "progressPct", "certificates", "createdAt", "lastActive",
+    "modulesCompleted", "progressPct", "certificates", "feedback", "feedbackAt", "createdAt", "lastActive",
   ];
   const lines = [header.join(",")];
   for (const r of rows) {
@@ -221,4 +261,6 @@ module.exports = {
   usersToCsv,
   applyFilters,
   isRegisteredUser,
+  normalizeState,
+  normalizeLabel,
 };

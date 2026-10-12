@@ -18,7 +18,7 @@ const contentDB = {
   registration: {
     fullName: { prompt: "What is your full name?" },
     terms: {
-      prompt: "Before we go any further, let's get some legal stuff out the way.\n\nFirstly, by continuing, you will be agreeing to our Terms and Conditions and Privacy Policy.\n\nAlso, would you mind opting in so we can contact you in the future?",
+      prompt: "Before we go any further, let's get some legal stuff out the way.\n\nFirstly, by continuing, you will be agreeing to our Terms and Conditions and Privacy Policy.\n\n📄 Read our full Terms & Conditions here: https://docs.google.com/document/d/13_Lul7V44IND2KBkUnEOrbHoE2Yxc0Imxulf909pQxU/edit?usp=sharing\n\nAlso, would you mind opting in so we can contact you in the future?",
       buttons: ["Yes", "No"]
     },
     email: {

@@ -54,12 +54,16 @@ async function doLogin() {
 }
 
 function filters() {
+  const countrySel = $("fCountry") ? $("fCountry").value : "";
+  // "Other" = anything non-empty that isn't Nigeria (normalized compare).
+  const country = countrySel === "Other" ? "__other__" : countrySel;
   return {
     search: $("fSearch").value.trim(),
     status: $("fStatus").value,
     gender: $("fGender").value,
     community: $("fCommunity").value,
     province: $("fProvince").value.trim(),
+    country,
     sort: state.sort, order: state.order,
     limit: state.limit, offset: state.offset,
   };
@@ -72,24 +76,67 @@ async function loadStats() {
     [s.total, "Total users"], [s.registered, "Registered"], [s.partial, "Partial"],
     [s.completedAll, "Completed all"], [s.certsIssued, "Certificates"], [s.optedIn, "Opted in"],
   ].map(([n, l]) => `<div class="card"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
-  const bd = (title, arr) => arr.length ? `<div style="margin-bottom:10px"><b style="font-size:13px">${esc(title)}</b><div class="breakdown">${arr.map((x) => `<span>${esc(x.name)} · ${x.count}</span>`).join("")}</div></div>` : "";
-  $("breakdowns").innerHTML = `<b style="font-size:13px;color:#075e54">BREAKDOWNS</b><div style="margin-top:8px">` +
-    bd("State", s.byProvince) + bd("Gender", s.byGender) + bd("Age", s.byAge) + bd("Community", s.byCommunity) + "</div>";
+  const bd = (title, arr) => (arr || []).length ? `<div style="margin-bottom:10px"><b style="font-size:13px">${esc(title)}</b><div class="breakdown">${arr.map((x) => `<span>${esc(x.name)} · ${x.count}</span>`).join("")}</div></div>` : "";
+  const pillsEl = $("breakdownPills");
+  if (pillsEl) {
+    pillsEl.innerHTML =
+      bd("Country", s.byCountry) + bd("State", s.byProvince) + bd("Gender", s.byGender) + bd("Age", s.byAge) + bd("Community", s.byCommunity);
+  } else {
+    // Fallback for older admin.html without the pills container.
+    $("breakdowns").innerHTML = `<b style="font-size:13px;color:#075e54">BREAKDOWNS</b><div style="margin-top:8px">` +
+      bd("Country", s.byCountry) + bd("State", s.byProvince) + bd("Gender", s.byGender) + bd("Age", s.byAge) + bd("Community", s.byCommunity) + "</div>";
+  }
+  drawBreakdownCharts(s);
+}
+
+// Clean, professional palette (cycled when slices exceed it).
+const CHART_PALETTE = ["#075e54", "#25d366", "#34b7f1", "#f7c948", "#e67e22", "#8e44ad", "#e53935", "#607d8b", "#00bfa5", "#7986cb"];
+const breakdownCharts = {};
+function drawPie(canvasId, arr) {
+  const canvas = $(canvasId);
+  if (!canvas) return;
+  if (breakdownCharts[canvasId]) { try { breakdownCharts[canvasId].destroy(); } catch {} delete breakdownCharts[canvasId]; }
+  const data = arr || [];
+  if (!data.length || typeof window.Chart === "undefined") {
+    if (typeof window.Chart === "undefined" && data.length) return; // pills remain as fallback
+    return;
+  }
+  const colors = data.map((_, i) => CHART_PALETTE[i % CHART_PALETTE.length]);
+  breakdownCharts[canvasId] = new window.Chart(canvas, {
+    type: "pie",
+    data: { labels: data.map((x) => x.name), datasets: [{ data: data.map((x) => x.count), backgroundColor: colors, borderColor: "#fff", borderWidth: 2 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: "bottom", labels: { boxWidth: 12, font: { size: 11 } } } } },
+  });
+}
+function drawBreakdownCharts(s) {
+  if (typeof window.Chart === "undefined") return; // offline CDN: pills still render
+  drawPie("chCountry", s.byCountry);
+  drawPie("chProvince", s.byProvince);
+  drawPie("chGender", s.byGender);
+  drawPie("chAge", s.byAge);
+  drawPie("chCommunity", s.byCommunity);
 }
 
 async function loadUsers() {
   const data = await api("/api/admin/users?" + qs(filters()));
   state.total = data.total;
+  const fbPreview = (f) => {
+    const t = String(f || "").trim();
+    if (!t) return "—";
+    return t.length > 80 ? t.slice(0, 80) + "…" : t;
+  };
   $("rows").innerHTML = data.users.map((u) => `
     <tr>
       <td><b>${esc(u.fullName || "(no name)")}</b><br><span style="color:#667781;font-size:12px">${esc(u.maskedId)}</span></td>
       <td>${esc(u.email || "—")}<br><span style="color:#667781;font-size:12px">${esc(u.language || "")}</span></td>
       <td>${esc(u.province || "—")}<br><span style="color:#667781;font-size:12px">${esc(u.community || "")}</span></td>
+      <td>${esc(u.country || "—")}</td>
       <td><span class="pill ${u.status === "registered" ? "reg" : "part"}">${esc(u.status)}</span></td>
       <td>${u.modulesCompleted}/${u.totalModules}<div class="bar"><i style="width:${u.progressPct}%"></i></div></td>
+      <td style="max-width:220px" title="${esc(u.feedback || "")}">${esc(fbPreview(u.feedback))}</td>
       <td style="white-space:nowrap">${fmtDate(u.lastActive)}</td>
       <td><button class="btn btn-ghost" onclick="openDetail('${encodeURIComponent(u.id)}')">View</button></td>
-    </tr>`).join("") || `<tr><td colspan="7" style="text-align:center;color:#667781;padding:24px">No users match these filters.</td></tr>`;
+    </tr>`).join("") || `<tr><td colspan="9" style="text-align:center;color:#667781;padding:24px">No users match these filters.</td></tr>`;
   const pages = Math.max(1, Math.ceil(data.total / state.limit));
   const cur = Math.floor(state.offset / state.limit) + 1;
   $("pageInfo").textContent = `${data.total} users · page ${cur}/${pages}`;
@@ -109,12 +156,14 @@ async function openDetail(encId) {
     <div class="meta">${esc(u.maskedId)} · ${esc(u.status)} · last active ${fmtDate(u.lastActive)}</div>
     <div class="kv">
       <b>Email</b><span>${esc(u.email || "—")}</span>
-      <b>State / Country</b><span>${esc(u.province || "—")} ${esc(u.country ? "/ " + u.country : "")}</span>
+      <b>State</b><span>${esc(u.province || "—")}</span>
+      <b>Country</b><span>${esc(u.country || "—")}</span>
       <b>Community</b><span>${esc(u.community || "—")}</span>
       <b>Gender / Age</b><span>${esc(u.gender || "—")} · ${esc(u.age || "—")}</span>
       <b>Language / Role</b><span>${esc(u.language || "—")} · ${esc(u.jobRole || "—")}</span>
       <b>Opted in</b><span>${u.optedIn ? "Yes" : "No"}</span>
       <b>Registered</b><span>${fmtDate(u.createdAt)}</span>
+      <b>Feedback</b><span>${esc(u.feedback || "—")}${u.feedbackAt ? ` <span style="color:#667781;font-size:12px">(${esc(new Date(u.feedbackAt).toLocaleString())})</span>` : ""}</span>
     </div>
     <b style="font-size:13px">MODULES (${u.modulesCompleted}/${u.totalModules})</b><div style="font-size:13px;margin:6px 0 12px">${mods}</div>
     <b style="font-size:13px">CERTIFICATES (${u.certificates})</b><div style="font-size:13px;margin:6px 0 12px">${certs}</div>
