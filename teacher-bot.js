@@ -2042,12 +2042,23 @@ const extractInboundMessages = (body) => {
 
 const createWebhookApp = () => {
   const app = express();
+  // Meta sends webhooks as application/json — this must come before routes.
   app.use(express.json({ limit: "256kb" }));
+  // Log malformed-JSON bodies instead of silently 400-ing (Express default
+  // error handler would otherwise return HTML with zero pm2 log output).
+  app.use((err, _req, res, next) => {
+    if (err && (err.type === "entity.parse.failed" || err instanceof SyntaxError)) {
+      console.error("⚠️ POST /webhook hit: JSON parse failed:", String(err?.message || err).slice(0, 200));
+      return res.sendStatus(400);
+    }
+    return next(err);
+  });
 
   app.get("/health", (_req, res) => res.json({ ok: true, meta: metaConfigured() }));
 
   // Verification handshake (Meta calls this once when you Save the webhook).
   app.get("/webhook", (req, res) => {
+    console.log(`🔔 GET /webhook hit: mode=${req.query["hub.mode"]} challenge=${String(req.query["hub.challenge"] || "").slice(0, 20)}`);
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
@@ -2061,9 +2072,21 @@ const createWebhookApp = () => {
 
   // Inbound messages + status receipts (always 200 fast, work continues async).
   app.post("/webhook", (req, res) => {
+    // FIRST LINE: log every hit before validation/parsing/handling so a
+    // misconfigured tunnel or unsubscribed field is visible in pm2 logs
+    // instead of looking like "Meta never called us".
+    try {
+      const keys = req.body ? Object.keys(req.body) : [];
+      console.log(`🔔 POST /webhook hit: content-type=${req.headers["content-type"] || "?"} bodyKeys=[${keys.join(",")}] len=${JSON.stringify(req.body || {}).length}`);
+    } catch (e) {
+      console.log(`🔔 POST /webhook hit (unloggable body): ${e?.message || e}`);
+    }
     res.sendStatus(200);
     try {
       const inbound = extractInboundMessages(req.body);
+      if (!inbound.length) {
+        console.log("ℹ️ POST /webhook: no inbound messages in payload (likely a status receipt: sent/delivered/read — expected, not an error).");
+      }
       for (const item of inbound) {
         if (item.id) markAsRead(item.id);
         handleWebhookMessage({ from: item.from, body: item.body, id: item.id }).catch((e) =>
