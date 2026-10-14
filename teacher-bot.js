@@ -1,5 +1,4 @@
-const qrcode = require("qrcode-terminal");
-const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
+const express = require("express");
 const fs = require("fs");
 const path = require("path");
 require("dotenv").config();
@@ -13,64 +12,21 @@ const MEDIA_DIR = path.join(__dirname, "media");
 // Placeholder — swap in the real Google Form URL later.
 const FEEDBACK_FORM_URL = "[INSERT_GOOGLE_FORM_LINK_HERE]";
 
-// NOTE: version pin REMOVED (2026-09-22) — the pinned 2.3000.1047079153 HTML
-// shell still fetches (200) but its JS bundles no longer boot window.Debug,
-// so initialize() crashes with "Cannot read properties of undefined (reading
-// 'VERSION')". Stability > pinning: let whatsapp-web.js use its default
-// (live) version. To re-pin later, uncomment the webVersion/webVersionCache
-// lines below AND first verify checkPinnedVersion() reports a healthy page.
-// const PINNED_WWEB_VERSION = "2.3000.1047079153-alpha";
-const PINNED_WWEB_VERSION = null; // null = use default live version
+// ---- Meta Cloud API transport (replaces whatsapp-web.js) ----
+// State machine, curriculum, and users_db.json logic below are untouched.
+// Outbound goes through the Graph API; inbound arrives via webhook.
+// Media uses upload-for-ID: local files in media/ are uploaded to Meta to
+// get a media ID, then sent by ID. Nothing is re-registered on Meta.
+const META_PHONE_ID = process.env.META_PHONE_ID || "";
+const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
+const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v22.0";
+const BOT_PORT = parseInt(process.env.BOT_PORT || "3001", 10);
 
-// Startup diagnostic: fetches the pin URL and logs what it actually returns
-// (status, length, first 200 chars). Fire-and-forget — never blocks boot.
-const checkPinnedVersion = async (version) => {
-  if (!version) {
-    console.log("ℹ️ No WA Web version pinned — using whatsapp-web.js default (live) version.");
-    return;
-  }
-  const url = `https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/${version}.html`;
-  try {
-    const res = await fetch(url);
-    const text = await res.text();
-    console.log(`📌 Pin check ${version}: status=${res.status} len=${text.length}`);
-    console.log(`📌 Pin check head200: ${JSON.stringify(text.substring(0, 200))}`);
-    if (!res.ok || !/whatsapp-web/i.test(text.substring(0, 500))) {
-      console.error("📌 Pin check FAILED — pinned HTML looks wrong, NOT using pin.");
-    }
-  } catch (e) {
-    console.error("📌 Pin check fetch failed:", e?.message || e);
-  }
-};
-checkPinnedVersion(PINNED_WWEB_VERSION);
-
-// @lid → @c.us resolution for media sends. Fresh sessions surface inbound
-// senders as 1234@lid, and media upload addressed at the @lid fails with the
-// wwebjs-step:addsend memoize/id error while text still goes through.
-// getContact() resolves the underlying chat ID — always logged so the
-// conversion is visible, cached per sender, fallback to message.from.
-const lidToChatCache = new Map();
-const resolveChatId = async (message) => {
-  const from = message.from;
-  if (!/@lid$/.test(from || "")) return from;
-  if (lidToChatCache.has(from)) {
-    const cached = lidToChatCache.get(from);
-    console.log(`🔍 ID resolve (cached): message.from=${from} chatId=${cached}`);
-    return cached;
-  }
-  try {
-    const contact = await message.getContact();
-    const serialized = contact?.id?._serialized;
-    console.log(`🔍 ID resolve: message.from=${from} contact.id=${serialized} isWAContact=${contact?.isWAContact}`);
-    if (serialized && serialized !== from) {
-      lidToChatCache.set(from, serialized);
-      return serialized;
-    }
-  } catch (e) {
-    console.log(`🔍 ID resolve failed for ${from}, falling back to message.from:`, e?.message || e);
-  }
-  return from;
-};
+const metaConfigured = () => !!(META_PHONE_ID && META_ACCESS_TOKEN);
+if (!metaConfigured()) {
+  console.warn("⚠️ META_PHONE_ID / META_ACCESS_TOKEN not set — outbound sends will fail until .env is configured.");
+}
 
 // ---- Human-like global message pacing (anti-burst) ----
 // Lighter variant: 2-4s for consecutive chunks inside one logical payload
@@ -84,37 +40,16 @@ const CHUNK_MIN_MS = 2000;
 const CHUNK_MAX_MS = 4000;
 const HUMAN_MIN_MS = 3000;
 const HUMAN_MAX_MS = 8000;
-const TYPING_REASSERT_MS = 3500; // re-assert before WA's ~5s typing expiry
 
 const randomChunkDelay = () =>
   Math.floor(CHUNK_MIN_MS + Math.random() * (CHUNK_MAX_MS - CHUNK_MIN_MS));
 const randomHumanDelay = () =>
   Math.floor(HUMAN_MIN_MS + Math.random() * (HUMAN_MAX_MS - HUMAN_MIN_MS));
 
-// Typing indicator with re-assert loop: keeps "typing..." visible for the
-// full wait instead of expiring after ~5s. Falls back to bare delay if
-// getChat() fails. Always clears state afterwards so the indicator drops.
-const humanPace = async (message, ms) => {
-  let chat = null;
-  try {
-    chat = await message.getChat();
-  } catch {}
-  if (!chat) {
-    await delay(ms);
-    return ms;
-  }
-  let elapsed = 0;
-  while (elapsed < ms) {
-    try {
-      await chat.sendStateTyping();
-    } catch {}
-    const step = Math.min(TYPING_REASSERT_MS, ms - elapsed);
-    await delay(step);
-    elapsed += step;
-  }
-  try {
-    await chat.clearState();
-  } catch {}
+// Human-like pacing delays are kept for UX (readable, unhurried delivery).
+// Cloud API has no typing-indicator send, so this is a plain delay.
+const humanPace = async (_message, ms) => {
+  await delay(ms);
   return ms;
 };
 
@@ -128,82 +63,189 @@ const enqueueGlobalSend = (fn) => {
   return next;
 };
 
-// Central text sender: global-queue + typing + randomized delay + reply.
+// ---- Graph API sender ----
+const graphBase = () => `https://graph.facebook.com/${META_GRAPH_VERSION}/${META_PHONE_ID}`;
+const graphHeaders = () => ({
+  Authorization: `Bearer ${META_ACCESS_TOKEN}`,
+  "Content-Type": "application/json",
+});
+
+const mimeForFile = (filePath) => {
+  const ext = String(filePath || "").toLowerCase().split(".").pop();
+  if (ext === "jpg" || ext === "jpeg") return "image/jpeg";
+  if (ext === "png") return "image/png";
+  if (ext === "webp") return "image/webp";
+  if (ext === "mp3") return "audio/mpeg";
+  if (ext === "ogg" || ext === "opus") return "audio/ogg";
+  if (ext === "m4a") return "audio/mp4";
+  if (ext === "mp4") return "video/mp4";
+  if (ext === "pdf") return "application/pdf";
+  return "application/octet-stream";
+};
+
+// Upload-for-ID cache: file path (+mtime) -> Meta media ID.
+// Media IDs expire, so any send that fails with an ID error evicts the entry.
+const mediaIdCache = new Map(); // filePath -> { id, mtimeMs }
+const mediaIdForFilePath = async (filePath) => {
+  const stat = fs.statSync(filePath);
+  const cached = mediaIdCache.get(filePath);
+  if (cached && cached.mtimeMs === stat.mtimeMs) return cached.id;
+  const mime = mimeForFile(filePath);
+  const buf = fs.readFileSync(filePath);
+  const form = new FormData();
+  form.append("messaging_product", "whatsapp");
+  form.append("file", new Blob([buf], { type: mime }), path.basename(filePath));
+  form.append("type", mime);
+  const res = await fetch(`${graphBase()}/media`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${META_ACCESS_TOKEN}` },
+    body: form,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.id) {
+    throw new Error(`media upload failed (${res.status}): ${JSON.stringify(data).slice(0, 200)}`);
+  }
+  mediaIdCache.set(filePath, { id: data.id, mtimeMs: stat.mtimeMs });
+  return data.id;
+};
+
+const graphSend = async (payload, label) => {
+  if (!metaConfigured()) throw new Error("META_PHONE_ID / META_ACCESS_TOKEN not configured");
+  const res = await fetch(`${graphBase()}/messages`, {
+    method: "POST",
+    headers: graphHeaders(),
+    body: JSON.stringify({ messaging_product: "whatsapp", ...payload }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(`${label} failed (${res.status}): ${JSON.stringify(data).slice(0, 300)}`);
+  }
+  return data;
+};
+
+const sendTextTo = async (to, body) => {
+  // WhatsApp text limit is 4096 chars — chunk defensively.
+  const chunks = [];
+  let rest = String(body || "");
+  while (rest.length > 4000) {
+    chunks.push(rest.slice(0, 4000));
+    rest = rest.slice(4000);
+  }
+  chunks.push(rest);
+  let out = null;
+  for (const c of chunks) {
+    out = await graphSend({ to, type: "text", text: { body: c, preview_url: true } }, "text send");
+  }
+  return out;
+};
+
+const sendImageTo = async (to, filePath, caption) => {
+  const id = await mediaIdForFilePath(filePath);
+  try {
+    return await graphSend({ to, type: "image", image: { id, caption: caption || "" } }, "image send");
+  } catch (e) {
+    if (/media|id|expired|not found/i.test(String(e?.message || e))) mediaIdCache.delete(filePath);
+    throw e;
+  }
+};
+
+const sendAudioTo = async (to, filePath) => {
+  const id = await mediaIdForFilePath(filePath);
+  try {
+    return await graphSend({ to, type: "audio", audio: { id } }, "audio send");
+  } catch (e) {
+    if (/media|id|expired|not found/i.test(String(e?.message || e))) mediaIdCache.delete(filePath);
+    throw e;
+  }
+};
+
+const sendDocumentTo = async (to, filePath, caption, filename) => {
+  const id = await mediaIdForFilePath(filePath);
+  try {
+    return await graphSend(
+      { to, type: "document", document: { id, caption: caption || "", filename: filename || path.basename(filePath) } },
+      "document send"
+    );
+  } catch (e) {
+    if (/media|id|expired|not found/i.test(String(e?.message || e))) mediaIdCache.delete(filePath);
+    throw e;
+  }
+};
+
+const markAsRead = async (messageId) => {
+  if (!metaConfigured() || !messageId) return;
+  try {
+    await fetch(`${graphBase()}/messages`, {
+      method: "POST",
+      headers: graphHeaders(),
+      body: JSON.stringify({ messaging_product: "whatsapp", status: "read", message_id: messageId }),
+    });
+  } catch {}
+};
+
+// Central text sender: global-queue + randomized delay + Graph send.
 // pace: "human" (3-8s, default) | "chunk" (2-4s, same-payload pieces).
 // NOTE: uses bracket access to avoid matching the automated
 // message.reply( -> pacedReply(message, migration below.
-const pacedReply = async (message, content, pace = "human", options) => {
+const pacedReply = async (message, content, pace = "human", _options) => {
   return enqueueGlobalSend(async () => {
     const waitMs = pace === "chunk" ? randomChunkDelay() : randomHumanDelay();
-    console.log(`⏳ Pacing (${pace}): waiting ${(waitMs / 1000).toFixed(1)}s with typing...`);
+    console.log(`⏳ Pacing (${pace}): waiting ${(waitMs / 1000).toFixed(1)}s...`);
     await humanPace(message, waitMs);
-    return await message["reply"](content, undefined, options);
+    console.log(`📤 Text to ${message.from}: ${(String(content) || "").length} chars`);
+    return await sendTextTo(message.from, content);
   });
 };
 
-// Central media sender. Cascade:
-//  1. global-queue + typing + randomized delay (replaces old fixed 2s)
-//  2. chat.sendMessage primary (store's own chat record)
-//  3. client.sendMessage(resolved @c.us) fallback
-// NOTE: MessageMedia has NO id field ({mimetype,data,filename,filesize} only
-// per MessageMedia.js) — the memoize/id throw comes from WA's own page-side
-// getters, so stamping media.id would be a no-op and is NOT done here.
+// Central media sender (upload-for-ID). Accepts a legacy
+// MessageMedia-like ({ filename, mimetype, data }), an absolute file path,
+// or a bare filename relative to media/. Type is inferred from extension:
+// image -> image+caption, audio -> audio, pdf -> document+caption.
 // pace: "human" (3-8s, default) | "chunk" (2-4s, in-slide media).
+const resolveMediaPath = (media) => {
+  if (typeof media === "string") {
+    if (path.isAbsolute(media) && fs.existsSync(media)) return media;
+    const inMedia = path.join(MEDIA_DIR, media);
+    if (fs.existsSync(inMedia)) return inMedia;
+    if (fs.existsSync(media)) return media;
+    return null;
+  }
+  if (media && typeof media === "object") {
+    if (media.filePath && fs.existsSync(media.filePath)) return media.filePath;
+    if (media.filename) {
+      const inMedia = path.join(MEDIA_DIR, path.basename(media.filename));
+      if (fs.existsSync(inMedia)) return inMedia;
+    }
+  }
+  return null;
+};
+
 const sendMedia = async (message, media, options = {}, pace = "human") => {
   return enqueueGlobalSend(async () => {
     const waitMs = pace === "chunk" ? randomChunkDelay() : randomHumanDelay();
-    console.log(`📤 Media send: file=${media?.filename} type=${media?.mimetype} b64len=${media?.data?.length || 0} caption=${(options.caption || "").length} chars (pacing ${pace} ${(waitMs / 1000).toFixed(1)}s)`);
+    const filePath = resolveMediaPath(media);
+    const caption = options?.caption || "";
+    console.log(`📤 Media send: file=${filePath || media?.filename || "?"} caption=${caption.length} chars (pacing ${pace} ${(waitMs / 1000).toFixed(1)}s)`);
     await humanPace(message, waitMs);
-    const chatId = await resolveChatId(message);
-    try {
-      const chat = await message.getChat();
-      console.log(`📤 Media via chat.sendMessage (chat=${chat?.id?._serialized || chatId})`);
-      return await chat.sendMessage(media, options);
-    } catch (e1) {
-      console.log(`📤 chat.sendMessage failed (${String(e1?.message || e1).split("\n")[0]}), fallback client.sendMessage(${chatId})`);
-      return await client.sendMessage(chatId, media, options);
+    if (!filePath) {
+      console.log("📤 Media file not found, falling back to caption/text only");
+      if (caption) return await sendTextTo(message.from, caption);
+      throw new Error("media file not found and no caption fallback");
     }
+    const mime = mimeForFile(filePath);
+    if (mime.startsWith("image/")) return await sendImageTo(message.from, filePath, caption);
+    if (mime.startsWith("audio/")) return await sendAudioTo(message.from, filePath);
+    return await sendDocumentTo(message.from, filePath, caption);
   });
 };
 
-const client = new Client({
-  authStrategy: new LocalAuth({
-    dataPath: "session2",
-  }),
-  takeoverOnConflict: true,
-  restartOnAuthFail: true,
-  qrMaxRetries: 0,
-  authTimeoutMs: 0,
-  // ...(PINNED_WWEB_VERSION
-  //   ? {
-  //       webVersion: PINNED_WWEB_VERSION,
-  //       webVersionCache: {
-  //         type: "remote",
-  //         remotePath:
-  //           "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/{version}.html",
-  //         strict: false, // false = fall back to live version instead of crashing
-  //       },
-  //     }
-  //   : {}),
-  puppeteer: {
-    headless: true,
-    timeout: 120000,
-    args: [
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-accelerated-2d-canvas",
-      "--no-first-run",
-      "--disable-gpu",
-      "--disable-extensions",
-      "--disable-background-timer-throttling",
-      "--disable-backgrounding-occluded-windows",
-      "--disable-renderer-backgrounding",
-      "--disable-blink-features=AutomationControlled",
-    ],
-  },
-});
-
+// Thin shims used by the rewritten call sites below (same queue/pacing).
+const sendImageFile = (message, filename, caption, pace = "human") =>
+  sendMedia(message, filename, { caption: caption || "" }, pace);
+const sendAudioFile = (message, filename, pace = "chunk") =>
+  sendMedia(message, filename, {}, pace);
+const sendDocumentFile = (message, filePath, caption, filename, pace = "human") =>
+  sendMedia(message, { filePath, filename: filename || path.basename(filePath) }, { caption: caption || "" }, pace);
 const STAGES = {
   NEW: "new",
   WELCOME: "welcome",
@@ -582,20 +624,12 @@ const handleNewUser = async (message) => {
   const welcome = getWelcome();
   let welcomeText = welcome.text;
   
-  // Original behavior: image with caption attached (as before).
-  // NOTE: media goes via client.sendMessage (no quoted msg) — message.reply
-  // with media serializes the quoted message and trips the
-  // wwebjs-step:addsend memoize/id error on mismatched WA Web versions.
+  // Welcome image + caption together (upload-for-ID via Graph API).
   if (welcome.media) {
     try {
       const mediaPath = path.join(MEDIA_DIR, welcome.media.filename);
       if (fs.existsSync(mediaPath)) {
-        let media = MessageMedia.fromFilePath(mediaPath);
-        if (!media?.data) {
-          const b64 = fs.readFileSync(mediaPath).toString("base64");
-          media = new MessageMedia("image/jpeg", b64, welcome.media.filename);
-        }
-        await sendMedia(message, media, { caption: welcomeText });
+        await sendImageFile(message, mediaPath, welcomeText);
         return;
       } else {
         console.log(`Welcome media missing at ${mediaPath}, sending text only`);
@@ -980,8 +1014,7 @@ const handleMainMenu = async (message) => {
     
     const introMediaPath = path.join(MEDIA_DIR, "tools list  intro.jpeg");
     if (fs.existsSync(introMediaPath)) {
-      const introMedia = MessageMedia.fromFilePath(introMediaPath);
-      await sendMedia(message, introMedia, { caption: introText + "\n\nReply with *1* to start or *2* to go back." });
+      await sendImageFile(message, introMediaPath, introText + "\n\nReply with *1* to start or *2* to go back.");
     } else {
       await pacedReply(message, introText + "\n\nReply with *1* to start or *2* to go back.");
     }
@@ -1176,13 +1209,16 @@ const handleTopicIntro = async (message) => {
 const sendSlide = async (message, state, slide) => {
   const userId = message.from;
 
-  // Returns false if the WhatsApp page died mid-send (needs re-init).
-  // Same-payload chunks use "chunk" pacing (2-4s + typing) via the global
-  // queue — responsive but never sub-millisecond bursts.
+  // Returns false if a Graph send failed (caller stops the slide, no pile-on).
+  // Same-payload chunks use "chunk" pacing (2-4s) via the global queue.
   const safeReply = async (content, options) => {
     try {
-      const isMedia = content && content.mimetype && content.data;
-      if (isMedia) {
+      const isMediaPath =
+        typeof content === "string" &&
+        (content.startsWith(MEDIA_DIR) || /\.(jpe?g|png|webp|mp3|ogg|opus|m4a|mp4|pdf)$/i.test(content)) &&
+        fs.existsSync(content);
+      const isMediaObj = content && typeof content === "object" && (content.filePath || content.filename);
+      if (isMediaPath || isMediaObj) {
         await sendMedia(message, content, options || {}, "chunk");
       } else {
         await pacedReply(message, content, "chunk", options);
@@ -1191,21 +1227,6 @@ const sendSlide = async (message, state, slide) => {
     } catch (e) {
       const msg = String(e?.message || e || "");
       console.error("Reply failed:", msg.split("\n")[0]);
-      if (
-        msg.includes("Execution context was destroyed") ||
-        msg.includes("Protocol error") ||
-        msg.includes("Target closed") ||
-        msg.includes("Session closed")
-      ) {
-        console.error("⚠️ WhatsApp page died mid-send. It usually auto-reloads — next message will retry. If it stays dead, restart the bot.");
-        isReady = false;
-        try {
-          await destroyClient();
-          startClient();
-        } catch (err) {
-          console.error("Re-init after dead page failed:", err?.message || err);
-        }
-      }
       return false;
     }
   };
@@ -1230,8 +1251,7 @@ const sendSlide = async (message, state, slide) => {
     try {
       const audioPath = path.join(MEDIA_DIR, slide.audio);
       if (fs.existsSync(audioPath)) {
-        const media = await MessageMedia.fromFilePath(audioPath);
-        await safeReply(media);
+        await sendAudioFile(message, audioPath);
       } else if (!sendText) {
         // Graceful fallback: audio-only step whose file is missing must
         // not strand the user with silence — deliver the text instead.
@@ -1249,8 +1269,7 @@ const sendSlide = async (message, state, slide) => {
     try {
       const mediaPath = path.join(MEDIA_DIR, slide.media.filename);
       if (fs.existsSync(mediaPath)) {
-        const media = await MessageMedia.fromFilePath(mediaPath);
-        await safeReply(media, { caption: textChunks[textChunks.length - 1] });
+        await sendMedia(message, mediaPath, { caption: textChunks[textChunks.length - 1] }, "chunk");
       }
     } catch (e) {
       console.error("Error sending media:", String(e?.message || e).split("\n")[0]);
@@ -1460,12 +1479,7 @@ const handleQuiz = async (message) => {
     try {
       const mediaPath = completionFile ? path.join(MEDIA_DIR, completionFile) : null;
       if (mediaPath && fs.existsSync(mediaPath)) {
-        let completionMedia = MessageMedia.fromFilePath(mediaPath);
-        if (!completionMedia?.data) {
-          const b64 = fs.readFileSync(mediaPath).toString("base64");
-          completionMedia = new MessageMedia("image/jpeg", b64, completionFile);
-        }
-        await sendMedia(message, completionMedia, { caption: finalMessage });
+        await sendImageFile(message, mediaPath, finalMessage);
       } else {
         console.log(`Completion media missing at ${mediaPath}, sending text only`);
         await pacedReply(message, finalMessage);
@@ -1492,10 +1506,7 @@ const handleCompleted = async (message) => {
     try {
       await pacedReply(message, `⏳ Generating your certificate for *${certName}*...`);
       const { filePath, certId } = await generateCertificatePDF(certName);
-      const media = MessageMedia.fromFilePath(filePath);
-      await sendMedia(message, media, {
-        caption: `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`
-      });
+      await sendDocumentFile(message, filePath, `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`, `${certName}-certificate.pdf`);
       if (!usersDB[userId].certificateRequests) {
         usersDB[userId].certificateRequests = [];
       }
@@ -1705,51 +1716,8 @@ const handleFeedback = async (message) => {
   await pacedReply(message, "Reply *NEXT TOOL* to continue to the next tool ➡️\nReply *DONE* to see your certificate 🎓\nReply *SHARE* to share with colleagues 📲\nReply *MENU* to go back to the main menu 🏠");
 };
 
-client.on("qr", (qr) => {
-  console.log("\n📱 Scan this QR code with your WhatsApp phone:");
-  qrcode.generate(qr, { small: true });
-});
-
-client.on("authenticated", () => {
-  console.log("🔐 Authenticated! Waiting for WhatsApp Web to load (ready)...");
-});
-
-client.on("auth_failure", (msg) => {
-  console.error("❌ Authentication failed:", msg);
-});
-
-client.on("message_create", async (message) => {
-  // Diagnostic disabled: was tripling logs. Re-enable only when debugging.
-  return;
-  // try {
-  //   console.log(`[diag message_create] from=${message.from} fromMe=${message.fromMe} isGroup=${message.isGroup} body="${(message.body || "").slice(0, 80)}"`);
-  // } catch {}
-});
-
-client.on("ready", async () => {
-  if (isReady) return;
-  isReady = true;
-  try {
-    loadingHistory = [];
-    healthFailStreak = 0;
-    attachPageGuards();
-  } catch {}
-  console.log("✅ *Témí* Bot is ready!");
-  try {
-    console.log(`   • WA Web version: ${await client.getWWebVersion()}`);
-    const info = client.info;
-    console.log(`   • Logged in as: ${info?.pushname || "?"} (${info?.wid?.user || "?"})`);
-  } catch {}
-  console.log("📚 Pre-loaded content:");
-  console.log(`   • Topics: ${Object.keys(contentDB.topics).length}`);
-  console.log(`   • AI Tools modules: ${contentDB.topics["ai-tools"]?.modules?.length || 0}`);
-  console.log(`   • Registered users: ${Object.keys(usersDB).length}`);
-  console.log("💬 Now text the bot number from another phone. Watch for 'Message from' logs here.");
-});
-
-// Guards against the exact failure in your log: one user tap arriving as
-// 3–4 duplicate events (multi-instance / WA re-emit) all running sendSlide
-// concurrently and killing the page.
+// Dedupe: Meta may retry webhook deliveries — one user tap must never run
+// sendSlide concurrently. Same guard as before, keyed on Meta message ID.
 const seenMessageIds = new Set();
 const userQueues = new Map();
 
@@ -1766,13 +1734,14 @@ const enqueueForUser = (userId, fn) => {
   return next;
 };
 
-client.on("message", async (message) => {
+// Inbound entry from the webhook route. Drops groups/status/self-echoes,
+// dedupes Meta retries, then serializes work per user so rapid taps queue.
+const handleWebhookMessage = async (message) => {
   try {
-    if (message.from === "status@broadcast" || message.fromMe) return;
-    if (message.isGroup) return;
+    if (!message || !message.from) return;
 
     // Dedupe identical deliveries of the same WhatsApp message
-    const msgId = message.id?._serialized || message.id?.id;
+    const msgId = typeof message.id === "string" ? message.id : message.id?.id;
     if (msgId) {
       if (seenMessageIds.has(msgId)) {
         console.log(`⏭️ Ignoring duplicate delivery of ${msgId}`);
@@ -1788,14 +1757,13 @@ client.on("message", async (message) => {
     const userId = message.from;
 
     // Serialize work per user so rapid taps queue instead of colliding
-    try { lastInboundAt = Date.now(); } catch {}
     await enqueueForUser(userId, async () => {
       await handleIncomingMessage(message);
     });
   } catch (error) {
     console.error("Error handling message:", error?.message || error);
   }
-});
+};
 
 const handleIncomingMessage = async (message) => {
   try {
@@ -2017,17 +1985,10 @@ const handleIncomingMessage = async (message) => {
 
 let isShuttingDown = false;
 
-client.on("disconnected", (reason) => {
-  console.log("⚠️ Client disconnected:", reason);
-  if (isShuttingDown || isReinitializing) return;
-  reinitialize(`client disconnected (${reason})`);
-});
-
 process.on("SIGINT", () => {
   isShuttingDown = true;
   console.log("\n👋 Shutting down gracefully...");
   saveData();
-  client.destroy();
   process.exit(0);
 });
 
@@ -2041,218 +2002,131 @@ if (!fs.existsSync(MEDIA_DIR)) {
 
 loadData();
 
-let initRetries = 0;
-const MAX_INIT_RETRIES = 5;
-let isReady = false;
-let isInitializing = false;
-
-// Destroy any leaked browser before re-initializing. Without this, a
-// failed initialize() keeps the userDataDir lock and every retry dies with
-// "The browser is already running for ... session2\session".
-const destroyClient = async () => {
+// ---- Webhook transport: verification + inbound ----
+// Meta dashboard setup (one-time, you do this in the dashboard):
+//   1. Invent any secret string -> META_VERIFY_TOKEN in .env (EC2).
+//   2. WhatsApp > Configuration > Webhook > Edit: callback URL
+//      https://your-domain:3001/webhook plus that verify token, Verify & Save.
+//   3. Subscribe to the `messages` field.
+// Inbound interactive button/list replies are mapped back to plain text so
+// the state machine below sees exactly what it saw before.
+const extractInboundMessages = (body) => {
+  const out = [];
   try {
-    await client.destroy();
-  } catch {}
-  isInitializing = false;
-  // Give Chrome time to release the profile lock
-  await new Promise((r) => setTimeout(r, 2000));
+    const entries = (body && body.entry) || [];
+    for (const entry of entries) {
+      for (const change of entry?.changes || []) {
+        const value = change?.value || {};
+        for (const m of value?.messages || []) {
+          if (m.fromMe) continue;
+          const from = m.from;
+          if (!from) continue;
+          let text = "";
+          if (m.type === "text") {
+            text = (m.text && m.text.body) || "";
+          } else if (m.type === "interactive") {
+            const r = m.interactive?.button_reply || m.interactive?.list_reply || {};
+            text = r.title || r.id || "";
+          } else if (m.type === "button") {
+            text = m.button?.text || m.button?.payload || "";
+          }
+          out.push({ from, body: text || "", id: m.id, timestamp: m.timestamp, rawType: m.type });
+        }
+      }
+    }
+  } catch (e) {
+    console.error("webhook parse failed:", e?.message || e);
+  }
+  return out;
 };
 
-const startClient = () => {
-  if (isReady || isInitializing) {
-    console.log("ℹ️ Already ready/initializing, skipping duplicate initialize.");
-    return;
-  }
-  isInitializing = true;
-  client.initialize().then(() => {
-    isInitializing = false;
-  }).catch(async (err) => {
-    isInitializing = false;
-    if (isReady) return; // late failure after success — ignore
-    console.error("❌ Client.initialize() failed:", err?.message || err);
-    await destroyClient();
-    initRetries++;
-    if (initRetries <= MAX_INIT_RETRIES) {
-      const retryDelay = 5000 * initRetries;
-      console.log(`🔄 Retrying initialize (${initRetries}/${MAX_INIT_RETRIES}) in ${retryDelay / 1000}s...`);
-      setTimeout(startClient, retryDelay);
-    } else {
-      console.error("💥 Max retries reached. Fixes to try:");
-      console.error("   1. taskkill /F /IM chrome.exe  (kill zombie Chrome holding the lock)");
-      console.error("   2. Delete session2/session/Default/Singleton* lock files");
-      console.error("   3. If QR/auth is corrupt: back up then delete session2/ and re-scan");
-      console.error("   4. Use Node 20/22 LTS (you are on Node 25, which puppeteer 24 does not officially support)");
-      process.exit(1);
+const createWebhookApp = () => {
+  const app = express();
+  app.use(express.json({ limit: "256kb" }));
+
+  app.get("/health", (_req, res) => res.json({ ok: true, meta: metaConfigured() }));
+
+  // Verification handshake (Meta calls this once when you Save the webhook).
+  app.get("/webhook", (req, res) => {
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+    if (mode === "subscribe" && token === META_VERIFY_TOKEN && challenge) {
+      console.log("✅ Webhook verified by Meta.");
+      return res.status(200).send(challenge);
+    }
+    console.warn("⚠️ Webhook verification failed (check META_VERIFY_TOKEN).");
+    return res.sendStatus(403);
+  });
+
+  // Inbound messages + status receipts (always 200 fast, work continues async).
+  app.post("/webhook", (req, res) => {
+    res.sendStatus(200);
+    try {
+      const inbound = extractInboundMessages(req.body);
+      for (const item of inbound) {
+        if (item.id) markAsRead(item.id);
+        handleWebhookMessage({ from: item.from, body: item.body, id: item.id }).catch((e) =>
+          console.error("webhook handle failed:", e?.message || e)
+        );
+      }
+    } catch (e) {
+      console.error("webhook POST failed:", e?.message || e);
     }
   });
+
+  return app;
 };
 
-client.on("loading_screen", (percent, message) => {
-  console.log(`⏳ Loading WhatsApp Web: ${percent}% - ${message}`);
-  try { recordLoading(percent); } catch {}
-});
-
-client.on("change_state", (state) => {
-  console.log("🔄 Connection state:", state);
-  lastStateChangeAt = Date.now();
-});
-
-// ---- Session watchdog + Puppeteer page-crash guards ----
-// Covers the 95%→99%→95% loading loop and mid-session silent death:
-// - loading stall / loop while !isReady  → reinit (5 min budget)
-// - dead page while ready (getState probe fails) → reinit (no manual restart)
-// - pupPage close/error, browser disconnect, navigate-away → reinit
-const WATCHDOG_INTERVAL_MS = 60 * 1000;
-const STALL_BUDGET_MS = 5 * 60 * 1000;
-const PROBE_TIMEOUT_MS = 20 * 1000;
-let lastInboundAt = 0;
-let lastLoadingAt = 0;
-let lastStateChangeAt = 0;
-let loadingHistory = []; // { t, percent }
-let healthFailStreak = 0;
-let isReinitializing = false;
-let pageGuardsAttachedTo = null;
-
-const reinitialize = async (reason) => {
-  if (isShuttingDown || isReinitializing) return;
-  isReinitializing = true;
-  console.error(`🔄 Reinitializing client (${reason})...`);
-  isReady = false;
-  initRetries = 0;
-  try {
-    await destroyClient();
-  } catch (e) {
-    console.error("Reinit destroy failed:", e?.message || e);
-  }
-  isReinitializing = false;
-  startClient();
+const startWebhookServer = () => {
+  const app = createWebhookApp();
+  app.listen(BOT_PORT, () => {
+    console.log(`✅ *Témí* Bot is ready (Cloud API transport)!`);
+    console.log(`   • Webhook: http://localhost:${BOT_PORT}/webhook`);
+    console.log(`   • Health:  http://localhost:${BOT_PORT}/health`);
+    console.log("📚 Pre-loaded content:");
+    console.log(`   • Topics: ${Object.keys(contentDB.topics).length}`);
+    console.log(`   • AI Tools modules: ${contentDB.topics["ai-tools"]?.modules?.length || 0}`);
+    console.log(`   • Registered users: ${Object.keys(usersDB).length}`);
+    if (!metaConfigured()) {
+      console.warn("⚠️ Set META_PHONE_ID + META_ACCESS_TOKEN in .env, then restart.");
+    }
+    if (!META_VERIFY_TOKEN) {
+      console.warn("⚠️ Set META_VERIFY_TOKEN in .env before verifying the webhook in Meta dashboard.");
+    }
+  });
+  return app;
 };
-
-const attachPageGuards = () => {
-  try {
-    const page = client.pupPage;
-    if (page && pageGuardsAttachedTo !== page) {
-      pageGuardsAttachedTo = page;
-      page.on("close", () => reinitialize("WhatsApp page closed"));
-      page.on("error", (e) => reinitialize(`WhatsApp page error (${e?.message || e})`));
-      page.on("framenavigated", (frame) => {
-        try {
-          if (frame && typeof frame.parentFrame === "function" && !frame.parentFrame()) {
-            const url = frame.url();
-            if (url && !url.includes("web.whatsapp.com")) {
-              reinitialize(`navigated away unexpectedly (${url})`);
-            }
-          }
-        } catch {}
-      });
-      console.log("🛡️ Page crash guards attached.");
-    }
-    const browser = client.pupBrowser;
-    if (browser && !browser.__temiGuard) {
-      browser.__temiGuard = true;
-      browser.on("disconnected", () => reinitialize("puppeteer browser disconnected"));
-    }
-  } catch {}
-};
-
-const recordLoading = (percent) => {
-  const now = Date.now();
-  lastLoadingAt = now;
-  loadingHistory.push({ t: now, percent });
-  // keep last 10 min only
-  loadingHistory = loadingHistory.filter((e) => now - e.t < 10 * 60 * 1000);
-};
-
-const isLoadingLoop = () => {
-  const now = Date.now();
-  const recent = loadingHistory.filter((e) => now - e.t < STALL_BUDGET_MS);
-  // loop signature: many high-90s events, never reaching ready
-  if (recent.length < 8) return false;
-  const high = recent.filter((e) => e.percent >= 90).length;
-  return high >= 8;
-};
-
-setInterval(async () => {
-  if (isShuttingDown || isReinitializing || isInitializing) return;
-  const now = Date.now();
-  try {
-    attachPageGuards();
-  } catch {}
-
-  if (!isReady) {
-    // pre-ready: stall or 95↔99 loop
-    if (lastLoadingAt && now - lastLoadingAt > STALL_BUDGET_MS) {
-      await reinitialize("no loading progress for 5 min");
-      return;
-    }
-    if (isLoadingLoop()) {
-      await reinitialize("loading loop detected (95%↔99% without ready)");
-      return;
-    }
-    return;
-  }
-
-  // ready: probe the page — silent death shows up here first
-  try {
-    const state = await Promise.race([
-      client.getState(),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("getState timeout")), PROBE_TIMEOUT_MS)),
-    ]);
-    if (state === "CONNECTED" || state === "OPENING" || state === "PAIRING") {
-      healthFailStreak = 0;
-      return;
-    }
-    console.log(`⚠️ Watchdog: unexpected state "${state}"`);
-    healthFailStreak++;
-  } catch (e) {
-    const msg = String(e?.message || e || "");
-    console.error("⚠️ Watchdog probe failed:", msg.split("\n")[0]);
-    const fatal = /Target closed|Session closed|Protocol error|Execution context was destroyed|getState timeout/i.test(msg);
-    healthFailStreak++;
-    if (fatal) {
-      await reinitialize(`health probe fatal (${msg.split("\n")[0]})`);
-      return;
-    }
-  }
-
-  // >5 min of consecutive probe failures (or no successful traffic while
-  // inbound arrived) → the bot is "not responding" → reinit without restart
-  const inboundWaiting = lastInboundAt > 0 && now - lastInboundAt < 10 * 60 * 1000;
-  if (healthFailStreak >= 5 || (healthFailStreak >= 3 && inboundWaiting)) {
-    healthFailStreak = 0;
-    await reinitialize("not responding for 5+ min (probe failures)");
-  }
-}, WATCHDOG_INTERVAL_MS);
 
 process.on("unhandledRejection", (reason) => {
-  const msg = String(reason?.message || reason || "");
-  // This is the exact crash you hit: page reloaded mid-inject. Only retry
-  // if we never became ready — otherwise we'd spawn a duplicate session
-  // (multiple "Bot is ready!" + duplicate replies).
-  if ((msg.includes("Execution context was destroyed") || msg.includes("Protocol error")) && !isReady) {
-    console.error("⚠️ Transient inject race (page reloaded mid-inject), retrying in 5s...");
-    setTimeout(async () => {
-      await destroyClient();
-      startClient();
-    }, 5000);
-    return;
-  }
   console.error("Unhandled Rejection:", reason);
 });
 
-startClient();
+if (require.main === module) {
+  startWebhookServer();
 
-// Admin dashboard (same EC2 process, live JSON). Never crashes the bot.
-try {
-  if (process.env.ADMIN_ENABLED !== "0") {
-    const { startAdminServer } = require("./admin-server.js");
-    startAdminServer();
-  } else {
-    console.log("📊 Admin dashboard disabled (ADMIN_ENABLED=0).");
+  // Admin dashboard (same EC2 process, live JSON). Never crashes the bot.
+  try {
+    if (process.env.ADMIN_ENABLED !== "0") {
+      const { startAdminServer } = require("./admin-server.js");
+      startAdminServer();
+    } else {
+      console.log("📊 Admin dashboard disabled (ADMIN_ENABLED=0).");
+    }
+  } catch (e) {
+    console.error("📊 Admin dashboard failed to start (bot unaffected):", e?.message || e);
   }
-} catch (e) {
-  console.error("📊 Admin dashboard failed to start (bot unaffected):", e?.message || e);
+
+  console.log("🚀 Starting *Témí* — Learn AI. Teach Better...");
 }
 
-console.log("🚀 Starting *Témí* — Learn AI. Teach Better...");
-console.log("⏳ Please wait while WhatsApp Web loads...");
+module.exports = {
+  createWebhookApp,
+  extractInboundMessages,
+  handleWebhookMessage,
+  handleIncomingMessage,
+  getUserState,
+  isTriggerPhrase,
+  isRegistered,
+  STAGES,
+};
