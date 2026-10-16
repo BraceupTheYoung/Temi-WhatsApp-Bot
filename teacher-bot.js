@@ -118,7 +118,11 @@ const graphSend = async (payload, label) => {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(`${label} failed (${res.status}): ${JSON.stringify(data).slice(0, 300)}`);
+    const errBody = data && data.error ? data.error : {};
+    const code = errBody.code ?? data.code ?? res.status;
+    const subcode = errBody.error_subcode ?? data.error_subcode ?? "-";
+    console.error(`Graph ${label} failed: http=${res.status} code=${code} subcode=${subcode} msg=${String(errBody.message || "").slice(0, 200)}`);
+    throw new Error(`${label} failed (http=${res.status} code=${code} subcode=${subcode}): ${JSON.stringify(data).slice(0, 300)}`);
   }
   return data;
 };
@@ -153,6 +157,16 @@ const sendAudioTo = async (to, filePath) => {
   const id = await mediaIdForFilePath(filePath);
   try {
     return await graphSend({ to, type: "audio", audio: { id } }, "audio send");
+  } catch (e) {
+    if (/media|id|expired|not found/i.test(String(e?.message || e))) mediaIdCache.delete(filePath);
+    throw e;
+  }
+};
+
+const sendVideoTo = async (to, filePath, caption) => {
+  const id = await mediaIdForFilePath(filePath);
+  try {
+    return await graphSend({ to, type: "video", video: { id, caption: caption || "" } }, "video send");
   } catch (e) {
     if (/media|id|expired|not found/i.test(String(e?.message || e))) mediaIdCache.delete(filePath);
     throw e;
@@ -235,6 +249,7 @@ const sendMedia = async (message, media, options = {}, pace = "human") => {
     const mime = mimeForFile(filePath);
     if (mime.startsWith("image/")) return await sendImageTo(message.from, filePath, caption);
     if (mime.startsWith("audio/")) return await sendAudioTo(message.from, filePath);
+    if (mime.startsWith("video/")) return await sendVideoTo(message.from, filePath, caption);
     return await sendDocumentTo(message.from, filePath, caption);
   });
 };
@@ -1756,6 +1771,12 @@ const handleWebhookMessage = async (message) => {
 
     const userId = message.from;
 
+    // Observability for non-text inbound (voice notes, images, docs, stickers
+    // arrive with no text body — intentionally silent for cold users).
+    if (message.rawType && message.rawType !== "text" && message.rawType !== "interactive" && message.rawType !== "button") {
+      console.log(`ℹ️ Non-text inbound: type=${message.rawType} from=${userId}`);
+    }
+
     // Serialize work per user so rapid taps queue instead of colliding
     await enqueueForUser(userId, async () => {
       await handleIncomingMessage(message);
@@ -2019,7 +2040,9 @@ const extractInboundMessages = (body) => {
         const value = change?.value || {};
         for (const m of value?.messages || []) {
           if (m.fromMe) continue;
-          const from = m.from;
+          // Normalize to digits: Meta wa_id is already digits-only; this only
+          // strips a hypothetical "+" / spaces so lookups can't miss.
+          const from = String(m.from || "").replace(/\D/g, "");
           if (!from) continue;
           let text = "";
           if (m.type === "text") {
@@ -2062,7 +2085,7 @@ const createWebhookApp = () => {
     const mode = req.query["hub.mode"];
     const token = req.query["hub.verify_token"];
     const challenge = req.query["hub.challenge"];
-    if (mode === "subscribe" && token === META_VERIFY_TOKEN && challenge) {
+    if (mode === "subscribe" && META_VERIFY_TOKEN && token === META_VERIFY_TOKEN && challenge) {
       console.log("✅ Webhook verified by Meta.");
       return res.status(200).send(challenge);
     }
@@ -2089,7 +2112,7 @@ const createWebhookApp = () => {
       }
       for (const item of inbound) {
         if (item.id) markAsRead(item.id);
-        handleWebhookMessage({ from: item.from, body: item.body, id: item.id }).catch((e) =>
+        handleWebhookMessage({ from: item.from, body: item.body, id: item.id, rawType: item.rawType }).catch((e) =>
           console.error("webhook handle failed:", e?.message || e)
         );
       }
