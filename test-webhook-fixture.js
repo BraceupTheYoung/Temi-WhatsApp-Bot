@@ -133,6 +133,13 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   const sendsAfter = graphCalls.filter((c) => c.body && c.body.type === "image").length;
   assert.strictEqual(sendsAfter, sendsBefore, "duplicate delivery must not re-send");
 
+  // 8) Trigger normalization: punctuation/emoji/whitespace variants match,
+  //    bare words and extra-word sentences do not.
+  const triggerYes = ["hello temi", "Hello Temi", "hello temi!", "Hello, Temi", "hello temi 🙏", "  HELLO   TEMI  "];
+  const triggerNo = ["hello", "temi", "hello temi please explain AI", "", "hello tem", "hi"];
+  for (const t of triggerYes) assert.ok(bot.isTriggerPhrase(t), `should match trigger: ${JSON.stringify(t)}`);
+  for (const t of triggerNo) assert.ok(!bot.isTriggerPhrase(t), `should NOT match trigger: ${JSON.stringify(t)}`);
+
   server.close();
   console.log("✅ webhook fixture: all assertions passed");
   process.exit(0);

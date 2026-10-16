@@ -157,7 +157,10 @@ function createAdminApp() {
 function startAdminServer(port) {
   const p = port || process.env.PORT || 3000;
   const app = createAdminApp();
-  const server = app.listen(p, () => {
+  // Localhost-only: the dashboard must never be reachable from the public
+  // internet. Reach it via SSH tunnel: ssh -L 3000:localhost:3000 <ec2-host>,
+  // then open http://localhost:3000/admin (webhook server on 3001 is unaffected).
+  const server = app.listen(p, "127.0.0.1", () => {
     console.log(`📊 Admin dashboard: http://localhost:${p}/admin`);
     if (!isConfigured()) {
       console.warn("⚠️ ADMIN_USER / ADMIN_PASS_HASH not set — /api/admin/* returns 503 until configured.");

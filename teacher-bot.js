@@ -1,6 +1,7 @@
 const express = require("express");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const { contentDB, getTopic, getWelcome, getMainMenu, getRegistration, getMenuHelp, getQuickResponse, getCompletion } = require("./content-db.js");
@@ -20,6 +21,9 @@ const FEEDBACK_FORM_URL = "[INSERT_GOOGLE_FORM_LINK_HERE]";
 const META_PHONE_ID = process.env.META_PHONE_ID || "";
 const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN || "";
 const META_VERIFY_TOKEN = process.env.META_VERIFY_TOKEN || "";
+// Optional: when set, POST /webhook bodies are authenticated via
+// X-Hub-Signature-256 (HMAC-SHA256 of the raw body). Unset = off.
+const META_APP_SECRET = process.env.META_APP_SECRET || "";
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || "v22.0";
 const BOT_PORT = parseInt(process.env.BOT_PORT || "3001", 10);
 
@@ -430,12 +434,18 @@ const formatQuiz = (question, num) => {
   return text;
 };
 
-// FIX 1 — strict trigger: ONLY the exact phrase "hello temi"
-// (case-insensitive, extra whitespace collapsed) may onboard a new user.
-// Everything else (hi/hello/hey/emoji/sticker/voice/random text) = silence.
+// FIX 1 — strict trigger: ONLY the phrase "hello temi" may onboard a new
+// user. Normalization: lowercase, trim, collapse whitespace, strip
+// punctuation and emoji (anything not a letter/number/whitespace becomes a
+// space). "hello temi!", "Hello, Temi", "hello temi 🙏" all match; extra
+// words ("hello temi please explain AI") do NOT match.
 const TRIGGER_PHRASE = "hello temi";
 const isTriggerPhrase = (body) => {
-  const normalized = (body || "").trim().toLowerCase().replace(/\s+/g, " ");
+  const normalized = String(body || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .trim()
+    .replace(/\s+/g, " ");
   return normalized === TRIGGER_PHRASE;
 };
 
@@ -1805,11 +1815,23 @@ const handleIncomingMessage = async (message) => {
     console.log(`   Current stage: ${state.stage}`);
     console.log(`   Current topic: ${state.currentTopic}`);
 
+    // INBOUND MEDIA (minimal): voice notes, images, video, documents, and
+    // stickers arrive with no usable text. Acknowledge with one friendly
+    // reply instead of "Invalid input" — for cold users too, but WITHOUT
+    // touching stage/state, so a cold user's media never starts a session
+    // (only "hello temi" does). Full handling later: GET /{media-id} via
+    // Graph with the bearer token, then download the bytes.
+    const inboundType = message.rawType || "text";
+    if (inboundType !== "text" && inboundType !== "interactive" && inboundType !== "button") {
+      await pacedReply(message, "I can't read voice notes or files yet. Please type your answer.");
+      return;
+    }
+
     // STRICT TRIGGER (FIX 1): a cold user (stage NEW = no live session)
     // gets a reply ONLY for the exact phrase "hello temi" — whether or
     // not they are registered. Everything else (greetings, questions,
-    // menu/help/commands, stickers, voice notes) is met with total
-    // silence. Only the trigger below may wake the bot.
+    // menu/help/commands) is met with total silence. Only the trigger
+    // below may wake the bot.
     if (state.stage === STAGES.NEW && !isTriggerPhrase(rawBody)) {
       console.log(`🔇 Ignoring "${rawBody}" from cold user ${userId} — trigger is "hello temi" only.`);
       return;
@@ -2066,7 +2088,9 @@ const extractInboundMessages = (body) => {
 const createWebhookApp = () => {
   const app = express();
   // Meta sends webhooks as application/json — this must come before routes.
-  app.use(express.json({ limit: "256kb" }));
+  // The verify hook keeps the raw bytes so X-Hub-Signature-256 can be
+  // checked against the exact payload Meta signed (parsed JSON would differ).
+  app.use(express.json({ limit: "256kb", verify: (req, _res, buf) => { req.rawBody = buf; } }));
   // Log malformed-JSON bodies instead of silently 400-ing (Express default
   // error handler would otherwise return HTML with zero pm2 log output).
   app.use((err, _req, res, next) => {
@@ -2095,6 +2119,24 @@ const createWebhookApp = () => {
 
   // Inbound messages + status receipts (always 200 fast, work continues async).
   app.post("/webhook", (req, res) => {
+    // Optional authenticity check — only when META_APP_SECRET is set.
+    // Meta signs every POST (including dashboard Test deliveries), so legit
+    // traffic still passes. Rejects BEFORE the 200 + async work below.
+    if (META_APP_SECRET) {
+      let valid = false;
+      try {
+        const expected = `sha256=${crypto.createHmac("sha256", META_APP_SECRET).update(req.rawBody || "").digest("hex")}`;
+        const received = req.headers["x-hub-signature-256"];
+        valid = typeof received === "string" && received.length === expected.length &&
+          crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+      } catch {
+        valid = false;
+      }
+      if (!valid) {
+        console.warn("⚠️ POST /webhook: X-Hub-Signature-256 mismatch — rejecting (check META_APP_SECRET).");
+        return res.sendStatus(403);
+      }
+    }
     // FIRST LINE: log every hit before validation/parsing/handling so a
     // misconfigured tunnel or unsubscribed field is visible in pm2 logs
     // instead of looking like "Meta never called us".
@@ -2139,6 +2181,11 @@ const startWebhookServer = () => {
     }
     if (!META_VERIFY_TOKEN) {
       console.warn("⚠️ Set META_VERIFY_TOKEN in .env before verifying the webhook in Meta dashboard.");
+    }
+    if (META_APP_SECRET) {
+      console.log("🔐 Webhook signature validation enabled (X-Hub-Signature-256).");
+    } else {
+      console.log("ℹ️ Webhook signature validation disabled (META_APP_SECRET not set).");
     }
   });
   return app;
