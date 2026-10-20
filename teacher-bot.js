@@ -10,8 +10,35 @@ const { generateCertificatePDF } = require("./certificate.js");
 const ADMIN_NUMBER = process.env.ADMIN_NUMBER;
 const MEDIA_DIR = path.join(__dirname, "media");
 
-// Placeholder — swap in the real Google Form URL later.
-const FEEDBACK_FORM_URL = "[INSERT_GOOGLE_FORM_LINK_HERE]";
+// Feedback form URL (shown to users after completing the course).
+const FEEDBACK_FORM_URL = "https://docs.google.com/forms/d/e/1FAIpQLSdHsEaQ5hfFb0xscOIRSOS60hkn1tjnz7KCCnfFDlJo6LYMEg/viewform?usp=send_form";
+
+// ---- Registration input validation ----
+// Easy to edit — add/remove allowed email domains here.
+const ALLOWED_EMAIL_DOMAINS = ["gmail.com", "yahoo.com"];
+const EMAIL_RETRY_MESSAGE =
+  "That doesn't look like a valid email. Please enter a Gmail or Yahoo address, for example name@gmail.com.";
+
+const normalizeEmail = (input) => String(input || "").trim().toLowerCase();
+
+// Basic email shape (one "@", no spaces, non-empty local part) + allowlisted
+// domain. Rejects "abc@", "@gmail.com", "a@@gmail.com", bare "gmail.com".
+const isValidEmail = (input) => {
+  const email = normalizeEmail(input);
+  if (!/^[^\s@]+@[^\s@]+$/.test(email)) return false;
+  const domain = email.slice(email.lastIndexOf("@") + 1);
+  return ALLOWED_EMAIL_DOMAINS.includes(domain);
+};
+
+// Terms reply parser: lowercase, strip punctuation, collapse whitespace.
+const normalizeReply = (body) =>
+  String(body || "").toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").trim().replace(/\s+/g, " ");
+
+const AGREE_REPLIES = ["1", "yes", "i agree", "agree", "yes i agree"];
+const DECLINE_REPLIES = ["2", "no", "i do not agree", "no i do not agree"];
+const TERMS_RETRY_MESSAGE = "Please reply with 1 to agree or 2 to decline.";
+const TERMS_DECLINE_MESSAGE =
+  "No problem. You need to agree to the Terms and Conditions to use Témí. Reply 1 whenever you're ready to continue.";
 
 // ---- Meta Cloud API transport (replaces whatsapp-web.js) ----
 // State machine, curriculum, and users_db.json logic below are untouched.
@@ -719,14 +746,14 @@ const handleWelcome = async (message) => {
   }
 
   if (step === "await_terms") {
-    // Step 2 reply → Step 3: accept → ask full name (or skip ahead to the
-    // first missing field when resuming a partial record); decline → re-ask.
-    if (msg === "yes" || msg === "1" || msg === "y" || msg === "opt in" || msg.includes("i agree")) {
+    // Step 2 reply → Step 3: agree → ask full name (or resume at the first
+    // missing field); decline → stay here and store nothing.
+    const reply = normalizeReply(msg);
+    if (AGREE_REPLIES.includes(reply)) {
       if (!usersDB[userId]) {
         usersDB[userId] = { createdAt: Date.now(), progress: {} };
       }
       usersDB[userId].agreedToTerms = true;
-      optedInUsers.add(userId);
       saveData();
       state.stage = STAGES.REGISTRATION;
       state.welcomeStep = null;
@@ -741,8 +768,11 @@ const handleWelcome = async (message) => {
       }
       return;
     }
-    const reg = getRegistration();
-    await pacedReply(message, "You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue, or *NO* to stop.\n\n" + formatOptions(reg.terms));
+    if (DECLINE_REPLIES.includes(reply)) {
+      await pacedReply(message, TERMS_DECLINE_MESSAGE);
+      return;
+    }
+    await pacedReply(message, TERMS_RETRY_MESSAGE);
     return;
   }
 
@@ -825,21 +855,31 @@ const handleRegistration = async (message) => {
     case "terms":
       // Legacy fallback — terms now live in WELCOME (Step 2), but honour
       // any stale state pointing here.
-      if (msg.toLowerCase() === "yes" || msg === "1") {
+      const termsReply = normalizeReply(msg);
+      if (AGREE_REPLIES.includes(termsReply)) {
         usersDB[userId].agreedToTerms = true;
-        optedInUsers.add(userId);
         state.regField = usersDB[userId].fullName ? "email_input" : "fullName";
         await pacedReply(message, usersDB[userId].fullName ? reg.email.prompt : reg.fullName.prompt);
+      } else if (DECLINE_REPLIES.includes(termsReply)) {
+        await pacedReply(message, TERMS_DECLINE_MESSAGE);
       } else {
-        await pacedReply(message, "You need to agree to the Terms and Conditions to continue.\n\nPlease reply *YES* to agree and continue.");
+        await pacedReply(message, TERMS_RETRY_MESSAGE);
       }
       break;
       
-    case "email_input":
-      usersDB[userId].email = msg;
+    case "email_input": {
+      const email = normalizeEmail(msg);
+      if (!isValidEmail(email)) {
+        // Stay on this step; do not save the invalid value.
+        state.regField = "email_input";
+        await pacedReply(message, EMAIL_RETRY_MESSAGE);
+        break;
+      }
+      usersDB[userId].email = email;
       state.regField = "province";
       await pacedReply(message, formatOptions(reg.province));
       break;
+    }
       
     case "province":
       if (msg.trim().length > 0) {
@@ -917,7 +957,6 @@ const handleRegistration = async (message) => {
         usersDB[userId].jobRole = "Teacher";
         state.stage = STAGES.MAIN_MENU;
         state.regField = null;
-        optedInUsers.add(userId);
         saveData();
 
         // FIX 2 — one message only (no batching): greeting + menu combined,
@@ -1823,6 +1862,12 @@ const handleIncomingMessage = async (message) => {
     // Graph with the bearer token, then download the bytes.
     const inboundType = message.rawType || "text";
     if (inboundType !== "text" && inboundType !== "interactive" && inboundType !== "button") {
+      // Email step: voice notes/images get the same retry message as invalid
+      // text and leave the user parked on the email prompt.
+      if (state.stage === STAGES.REGISTRATION && state.regField === "email_input") {
+        await pacedReply(message, EMAIL_RETRY_MESSAGE);
+        return;
+      }
       await pacedReply(message, "I can't read voice notes or files yet. Please type your answer.");
       return;
     }
@@ -2221,5 +2266,7 @@ module.exports = {
   getUserState,
   isTriggerPhrase,
   isRegistered,
+  isValidEmail,
+  normalizeEmail,
   STAGES,
 };

@@ -11,6 +11,13 @@ const assert = require("assert");
 const sandbox = fs.mkdtempSync(path.join(os.tmpdir(), "temi-webhook-test-"));
 process.chdir(sandbox);
 
+// Pre-seed partial registration records so the email-step tests can jump
+// straight to the email prompt (terms agreed + name already on file).
+fs.writeFileSync(path.join(sandbox, "users_db.json"), JSON.stringify({
+  "555000000001": { createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Email Tester One" },
+  "555000000002": { createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Email Tester Two" },
+}, null, 2));
+
 process.env.META_PHONE_ID = "1234567890";
 process.env.META_ACCESS_TOKEN = "test-token";
 process.env.META_VERIFY_TOKEN = "test-verify-secret";
@@ -33,6 +40,9 @@ globalThis.fetch = async (url, opts = {}) => {
 };
 
 const bot = require(path.join(__dirname, "teacher-bot.js"));
+
+// Keep the fixture fast: pacing delays still run, but always at their minimum.
+Math.random = () => 0;
 
 const textPayload = (from, bodyText, id = "wamid.text1") => ({
   entry: [{
@@ -139,6 +149,114 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   const triggerNo = ["hello", "temi", "hello temi please explain AI", "", "hello tem", "hi"];
   for (const t of triggerYes) assert.ok(bot.isTriggerPhrase(t), `should match trigger: ${JSON.stringify(t)}`);
   for (const t of triggerNo) assert.ok(!bot.isTriggerPhrase(t), `should NOT match trigger: ${JSON.stringify(t)}`);
+
+  // ---------------------------------------------------------------------
+  // Registration flow: email validation + terms agreement
+  // ---------------------------------------------------------------------
+  const readUsers = () => JSON.parse(fs.readFileSync(path.join(sandbox, "users_db.json"), "utf8"));
+  const readOptedIn = () => JSON.parse(fs.readFileSync(path.join(sandbox, "opted_in_users.json"), "utf8"));
+  const lastTextTo = (id) => {
+    const texts = graphCalls.filter((c) => c.body && c.body.type === "text" && c.body.to === id);
+    return texts.length ? texts[texts.length - 1].body.text.body : null;
+  };
+  let saySeq = 0;
+  const say = (id, body, rawType = "text") =>
+    bot.handleIncomingMessage({ from: id, body, rawType, id: `wamid.test-${id}-${++saySeq}` });
+  const goEmail = (id) => {
+    const st = bot.getUserState(id);
+    st.stage = bot.STAGES.REGISTRATION;
+    st.regField = "email_input";
+    st.welcomeStep = null;
+  };
+  const goTerms = (id) => {
+    const st = bot.getUserState(id);
+    st.stage = bot.STAGES.WELCOME;
+    st.welcomeStep = "await_terms";
+    st.regField = null;
+  };
+
+  // 9) Email validation (unit): shape + allowlist.
+  for (const e of ["name@gmail.com", "name@yahoo.com", " NAME@GMAIL.COM ", "a.b+tag@gmail.com"]) {
+    assert.ok(bot.isValidEmail(e), `should accept ${JSON.stringify(e)}`);
+  }
+  for (const e of ["Fajekobj", "abc@", "@gmail.com", "gmail.com", "a@@gmail.com", "a@outlook.com", "name@gmail", "name @gmail.com"]) {
+    assert.ok(!bot.isValidEmail(e), `should reject ${JSON.stringify(e)}`);
+  }
+  assert.strictEqual(bot.normalizeEmail(" NAME@GMAIL.COM "), "name@gmail.com");
+
+  // 10) Terms: "1" and "Yes" agree -> full-name prompt; no opt-in write.
+  for (const [id, reply] of [["555000000010", "1"], ["555000000011", "Yes!"]]) {
+    goTerms(id);
+    await say(id, reply);
+    assert.strictEqual(bot.getUserState(id).stage, bot.STAGES.REGISTRATION, `${reply} should advance`);
+    assert.strictEqual(bot.getUserState(id).regField, "fullName", `${reply} should ask for name`);
+    assert.match(lastTextTo(id) || "", /What is your full name\?/);
+    const u = readUsers()[id];
+    assert.ok(u && u.agreedToTerms === true, "terms agreement should be stored");
+    assert.ok(!u.fullName, "name must not be stored yet");
+    assert.ok(!readOptedIn().includes(id), "registration must not write opted_in_users.json");
+  }
+
+  // 11) Terms: "2" / "no" decline and "maybe" retry -> stay, store nothing.
+  const decl = "555000000012";
+  goTerms(decl);
+  for (const reply of ["2", "no"]) {
+    await say(decl, reply);
+    assert.strictEqual(bot.getUserState(decl).welcomeStep, "await_terms");
+    assert.match(lastTextTo(decl) || "", /No problem\. You need to agree to the Terms and Conditions/);
+    assert.ok(!(decl in readUsers()), "decline must not create a profile");
+  }
+  await say(decl, "maybe");
+  assert.strictEqual(lastTextTo(decl), "Please reply with 1 to agree or 2 to decline.");
+  assert.strictEqual(bot.getUserState(decl).welcomeStep, "await_terms");
+  assert.ok(!(decl in readUsers()), "invalid reply must not create a profile");
+
+  // 12) Email step: invalid text/voice note -> retry and stay; valid -> advance.
+  const mailA = "555000000001";
+  goEmail(mailA);
+  for (const bad of ["Fajekobj", "abc@", "@gmail.com", "a@outlook.com"]) {
+    await say(mailA, bad);
+    assert.strictEqual(lastTextTo(mailA),
+      "That doesn't look like a valid email. Please enter a Gmail or Yahoo address, for example name@gmail.com.");
+    assert.strictEqual(bot.getUserState(mailA).regField, "email_input", `${bad} must not advance`);
+    assert.ok(!readUsers()[mailA].email, `${bad} must not be saved`);
+  }
+  await say(mailA, "", "audio");
+  assert.strictEqual(lastTextTo(mailA),
+    "That doesn't look like a valid email. Please enter a Gmail or Yahoo address, for example name@gmail.com.");
+  assert.strictEqual(bot.getUserState(mailA).regField, "email_input");
+  assert.ok(!readUsers()[mailA].email);
+
+  await say(mailA, "  NAME@GMAIL.COM  ");
+  assert.strictEqual(bot.getUserState(mailA).regField, "province");
+  assert.strictEqual(readUsers()[mailA].email, "name@gmail.com");
+  assert.match(lastTextTo(mailA) || "", /Please enter your state/);
+
+  const mailB = "555000000002";
+  goEmail(mailB);
+  await say(mailB, "teacher@yahoo.com");
+  assert.strictEqual(bot.getUserState(mailB).regField, "province");
+  assert.strictEqual(readUsers()[mailB].email, "teacher@yahoo.com");
+
+  // 13) Full path: hello temi -> terms -> 1 -> name -> invalid email -> valid.
+  const flow = "555000000020";
+  await say(flow, "hello temi");
+  assert.strictEqual(bot.getUserState(flow).welcomeStep, "await_ack");
+  await say(flow, "ok");
+  assert.strictEqual(bot.getUserState(flow).welcomeStep, "await_terms");
+  assert.match(lastTextTo(flow) || "", /Do you agree to our Terms and Conditions and Privacy Policy\?/);
+  assert.match(lastTextTo(flow) || "", /1\. Yes, I agree\n2\. No, I do not agree/);
+  await say(flow, "1");
+  assert.strictEqual(bot.getUserState(flow).regField, "fullName");
+  await say(flow, "Flow Teacher");
+  assert.strictEqual(bot.getUserState(flow).regField, "email_input");
+  assert.match(lastTextTo(flow) || "", /Please enter your email address/);
+  await say(flow, "not-an-email");
+  assert.strictEqual(bot.getUserState(flow).regField, "email_input");
+  assert.match(lastTextTo(flow) || "", /That doesn't look like a valid email/);
+  await say(flow, "flow@gmail.com");
+  assert.strictEqual(bot.getUserState(flow).regField, "province");
+  assert.strictEqual(readUsers()[flow].email, "flow@gmail.com");
 
   server.close();
   console.log("✅ webhook fixture: all assertions passed");

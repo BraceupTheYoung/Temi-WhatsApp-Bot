@@ -18,8 +18,8 @@ const contentDB = {
   registration: {
     fullName: { prompt: "What is your full name?" },
     terms: {
-      prompt: "Before we go any further, let's get some legal stuff out the way.\n\nFirstly, by continuing, you will be agreeing to our Terms and Conditions and Privacy Policy.\n\n📄 Read our full Terms & Conditions here: https://docs.google.com/document/d/13_Lul7V44IND2KBkUnEOrbHoE2Yxc0Imxulf909pQxU/edit?usp=sharing\n\nAlso, would you mind opting in so we can contact you in the future?",
-      buttons: ["Yes", "No"]
+      prompt: "Before we go any further, let's get some legal stuff out the way.\n\nFirstly, by continuing, you will be agreeing to our Terms and Conditions and Privacy Policy.\n\n📄 Read our full Terms & Conditions here: https://docs.google.com/document/d/13_Lul7V44IND2KBkUnEOrbHoE2Yxc0Imxulf909pQxU/edit?usp=sharing\n\nDo you agree to our Terms and Conditions and Privacy Policy?",
+      buttons: ["Yes, I agree", "No, I do not agree"]
     },
     email: {
       prompt: "Please enter your email address."
