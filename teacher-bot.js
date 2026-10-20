@@ -242,6 +242,169 @@ const pacedReply = async (message, content, pace = "human", _options) => {
   });
 };
 
+// ---- WhatsApp Cloud API interactive messages ----
+// Hard limits enforced here. Bodies/ids/labels over their limit throw a
+// clear error so callers can fall back to the plain-text version; only
+// button titles and list row titles/descriptions are truncated.
+const LIMITS = {
+  LIST_ROWS: 10,
+  ROW_TITLE: 24,
+  ROW_DESCRIPTION: 72,
+  ROW_ID: 200,
+  LIST_BUTTON_LABEL: 20,
+  BODY: 1024,
+  BUTTON_TITLE: 20,
+  BUTTON_ID: 256,
+  CTA_DISPLAY_TEXT: 20,
+  MAX_BUTTONS: 3,
+  HEADER_FOOTER: 60,
+};
+
+const cut = (value, max) => String(value || "").slice(0, max);
+const requireText = (value, max, label) => {
+  const text = String(value || "");
+  if (!text.trim()) throw new Error(`${label} is required`);
+  if (text.length > max) throw new Error(`${label} exceeds ${max} characters (got ${text.length})`);
+  return text;
+};
+const interactiveHeader = (header) => {
+  if (!header) return null;
+  const text = typeof header === "string" ? header : header.text;
+  return text ? { type: "text", text: requireText(text, LIMITS.HEADER_FOOTER, "interactive header") } : null;
+};
+const interactiveFooter = (footer) => {
+  if (!footer) return null;
+  const text = typeof footer === "string" ? footer : footer.text;
+  return text ? { text: requireText(text, LIMITS.HEADER_FOOTER, "interactive footer") } : null;
+};
+
+// Same global queue, human pacing, and graphSend path as pacedReply.
+const interactiveSend = (to, payload, label) =>
+  enqueueGlobalSend(async () => {
+    const waitMs = randomHumanDelay();
+    console.log(`⏳ Pacing (human): waiting ${(waitMs / 1000).toFixed(1)}s...`);
+    await humanPace({ from: to }, waitMs);
+    console.log(`📤 ${label} to ${to}`);
+    return await graphSend({ to, type: "interactive", interactive: payload }, label);
+  });
+
+const sendListTo = async (to, { body, buttonLabel, sections, header, footer } = {}) => {
+  if (!to) throw new Error("list send: recipient is required");
+  const bodyText = requireText(body, LIMITS.BODY, "list body");
+  const button = requireText(buttonLabel, LIMITS.LIST_BUTTON_LABEL, "list button label");
+  if (!Array.isArray(sections) || sections.length === 0) {
+    throw new Error("list send: at least one section is required");
+  }
+  let rowCount = 0;
+  const normalizedSections = sections.map((section, sIdx) => {
+    if (!section || !Array.isArray(section.rows) || section.rows.length === 0) {
+      throw new Error(`list send: section ${sIdx + 1} must contain at least one row`);
+    }
+    if (section.title) requireText(section.title, LIMITS.ROW_TITLE, `list section ${sIdx + 1} title`);
+    return {
+      ...(section.title ? { title: section.title } : {}),
+      rows: section.rows.map((row, rIdx) => {
+        if (!row || row.id == null || String(row.id).length === 0) {
+          throw new Error(`list send: row ${rIdx + 1} missing id`);
+        }
+        const id = String(row.id);
+        if (id.length > LIMITS.ROW_ID) {
+          throw new Error(`list send: row ${rIdx + 1} id exceeds ${LIMITS.ROW_ID} characters`);
+        }
+        const title = cut(row.title, LIMITS.ROW_TITLE);
+        if (!title.trim()) throw new Error(`list send: row ${rIdx + 1} missing title`);
+        rowCount += 1;
+        return {
+          id,
+          title,
+          ...(row.description ? { description: cut(row.description, LIMITS.ROW_DESCRIPTION) } : {}),
+        };
+      }),
+    };
+  });
+  if (rowCount > LIMITS.LIST_ROWS) {
+    throw new Error(`list send: ${rowCount} rows exceeds the ${LIMITS.LIST_ROWS}-row limit`);
+  }
+  const headerObj = interactiveHeader(header);
+  const footerObj = interactiveFooter(footer);
+  return interactiveSend(to, {
+    type: "list",
+    ...(headerObj ? { header: headerObj } : {}),
+    body: { text: bodyText },
+    ...(footerObj ? { footer: footerObj } : {}),
+    action: { button, sections: normalizedSections },
+  }, "list send");
+};
+
+const sendButtonsTo = async (to, { body, buttons, header, footer } = {}) => {
+  if (!to) throw new Error("buttons send: recipient is required");
+  const bodyText = requireText(body, LIMITS.BODY, "buttons body");
+  if (!Array.isArray(buttons) || buttons.length === 0) {
+    throw new Error("buttons send: at least one button is required");
+  }
+  if (buttons.length > LIMITS.MAX_BUTTONS) {
+    throw new Error(`buttons send: ${buttons.length} buttons exceeds the ${LIMITS.MAX_BUTTONS}-button limit`);
+  }
+  const normalized = buttons.map((btn, idx) => {
+    if (!btn || btn.id == null || String(btn.id).length === 0) {
+      throw new Error(`buttons send: button ${idx + 1} missing id`);
+    }
+    const id = String(btn.id);
+    if (id.length > LIMITS.BUTTON_ID) {
+      throw new Error(`buttons send: button ${idx + 1} id exceeds ${LIMITS.BUTTON_ID} characters`);
+    }
+    const title = cut(btn.title, LIMITS.BUTTON_TITLE);
+    if (!title.trim()) throw new Error(`buttons send: button ${idx + 1} missing title`);
+    return { type: "reply", reply: { id, title } };
+  });
+  const headerObj = interactiveHeader(header);
+  const footerObj = interactiveFooter(footer);
+  return interactiveSend(to, {
+    type: "button",
+    ...(headerObj ? { header: headerObj } : {}),
+    body: { text: bodyText },
+    ...(footerObj ? { footer: footerObj } : {}),
+    action: { buttons: normalized },
+  }, "buttons send");
+};
+
+const sendCtaUrlTo = async (to, { body, displayText, url, header, footer } = {}) => {
+  if (!to) throw new Error("cta_url send: recipient is required");
+  const bodyText = requireText(body, LIMITS.BODY, "cta_url body");
+  const display = requireText(displayText, LIMITS.CTA_DISPLAY_TEXT, "cta_url display text");
+  let parsed;
+  try { parsed = new URL(url); } catch { parsed = null; }
+  if (!parsed || !/^https?:$/.test(parsed.protocol)) {
+    throw new Error("cta_url send: url must be a valid http(s) URL");
+  }
+  const headerObj = interactiveHeader(header);
+  const footerObj = interactiveFooter(footer);
+  return interactiveSend(to, {
+    type: "cta_url",
+    ...(headerObj ? { header: headerObj } : {}),
+    body: { text: bodyText },
+    ...(footerObj ? { footer: footerObj } : {}),
+    action: { name: "cta_url", parameters: { display_text: display, url: String(url) } },
+  }, "cta_url send");
+};
+
+// Interactive ids emitted by this bot. Unknown ids get a friendly retry;
+// ids valid for a different stage get an "expired" notice. Typed text is
+// untouched by this guard.
+const KNOWN_INTERACTIVE_IDS = new Set([
+  "ai-tools", "continue", "terms_agree", "terms_decline", "quiz", "menu",
+]);
+const isInteractiveIdAllowed = (id, state) => {
+  if (id === "menu") return true;
+  if (id === "ai-tools" || id === "continue") return state.stage === STAGES.MAIN_MENU;
+  if (id === "terms_agree" || id === "terms_decline") {
+    return (state.stage === STAGES.WELCOME && state.welcomeStep === "await_terms") ||
+      (state.stage === STAGES.REGISTRATION && state.regField === "terms");
+  }
+  if (id === "quiz") return state.stage === STAGES.LEARNING;
+  return false;
+};
+
 // Central media sender (upload-for-ID). Accepts a legacy
 // MessageMedia-like ({ filename, mimetype, data }), an absolute file path,
 // or a bare filename relative to media/. Type is inferred from extension:
@@ -557,7 +720,7 @@ const resumePartialRegistration = async (message) => {
   if (!u.agreedToTerms) {
     state.stage = STAGES.WELCOME;
     state.welcomeStep = "await_terms";
-    await pacedReply(message, backPrefix + formatOptions(reg.terms));
+    await sendTermsPrompt(message, backPrefix);
     return;
   }
   state.stage = STAGES.REGISTRATION;
@@ -738,10 +901,9 @@ const handleWelcome = async (message) => {
   const step = state.welcomeStep || "await_ack";
 
   if (step === "await_ack") {
-    // Step 2: terms & conditions opt-in ONLY. Wait for reply before Step 3.
+    // Step 2: Terms & Conditions agreement. Wait for reply before Step 3.
     state.welcomeStep = "await_terms";
-    const reg = getRegistration();
-    await pacedReply(message, formatOptions(reg.terms));
+    await sendTermsPrompt(message);
     return;
   }
 
@@ -749,7 +911,9 @@ const handleWelcome = async (message) => {
     // Step 2 reply → Step 3: agree → ask full name (or resume at the first
     // missing field); decline → stay here and store nothing.
     const reply = normalizeReply(msg);
-    if (AGREE_REPLIES.includes(reply)) {
+    const agreed = msg === "terms_agree" || AGREE_REPLIES.includes(reply);
+    const declined = msg === "terms_decline" || DECLINE_REPLIES.includes(reply);
+    if (agreed) {
       if (!usersDB[userId]) {
         usersDB[userId] = { createdAt: Date.now(), progress: {} };
       }
@@ -768,7 +932,7 @@ const handleWelcome = async (message) => {
       }
       return;
     }
-    if (DECLINE_REPLIES.includes(reply)) {
+    if (declined) {
       await pacedReply(message, TERMS_DECLINE_MESSAGE);
       return;
     }
@@ -796,8 +960,7 @@ const handleWelcome = async (message) => {
 
   // Fallback: park on terms step (one message, then wait).
   state.welcomeStep = "await_terms";
-  const reg = getRegistration();
-  await pacedReply(message, formatOptions(reg.terms));
+  await sendTermsPrompt(message);
 };
 
 const handleRegistration = async (message) => {
@@ -822,7 +985,7 @@ const handleRegistration = async (message) => {
   if (!usersDB[userId].agreedToTerms && state.regField !== "terms") {
     state.stage = STAGES.WELCOME;
     state.welcomeStep = "await_terms";
-    await pacedReply(message, formatOptions(reg.terms));
+    await sendTermsPrompt(message);
     return;
   }
 
@@ -856,11 +1019,13 @@ const handleRegistration = async (message) => {
       // Legacy fallback — terms now live in WELCOME (Step 2), but honour
       // any stale state pointing here.
       const termsReply = normalizeReply(msg);
-      if (AGREE_REPLIES.includes(termsReply)) {
+      const termsAgreed = msg === "terms_agree" || AGREE_REPLIES.includes(termsReply);
+      const termsDeclined = msg === "terms_decline" || DECLINE_REPLIES.includes(termsReply);
+      if (termsAgreed) {
         usersDB[userId].agreedToTerms = true;
         state.regField = usersDB[userId].fullName ? "email_input" : "fullName";
         await pacedReply(message, usersDB[userId].fullName ? reg.email.prompt : reg.fullName.prompt);
-      } else if (DECLINE_REPLIES.includes(termsReply)) {
+      } else if (termsDeclined) {
         await pacedReply(message, TERMS_DECLINE_MESSAGE);
       } else {
         await pacedReply(message, TERMS_RETRY_MESSAGE);
@@ -994,6 +1159,23 @@ const formatOptions = (field) => {
     });
   }
   return text;
+};
+
+// Terms agreement: reply buttons with a plain-text fallback. Typed 1/2 and
+// yes/no still work through AGREE_REPLIES / DECLINE_REPLIES in handleWelcome.
+const TERMS_BUTTONS = [
+  { id: "terms_agree", title: "Yes, I agree" },
+  { id: "terms_decline", title: "No, I do not agree" },
+];
+const sendTermsPrompt = async (message, prefix = "") => {
+  const reg = getRegistration();
+  const body = `${prefix}${reg.terms.prompt}`;
+  try {
+    return await sendButtonsTo(message.from, { body, buttons: TERMS_BUTTONS });
+  } catch (e) {
+    console.error("Terms buttons failed, falling back to text:", e?.message || e);
+    return await pacedReply(message, `${prefix}${formatOptions(reg.terms)}`);
+  }
 };
 
 const handleMainMenu = async (message) => {
@@ -1882,6 +2064,21 @@ const handleIncomingMessage = async (message) => {
       return;
     }
 
+    // Interactive replies: unknown ids get a friendly retry; known ids that
+    // belong to a different stage get an "expired" notice. The guard sits
+    // after the cold-user gate, so a cold tap stays silent like typed text.
+    if (message.rawType === "interactive") {
+      const interactiveId = rawBody.trim();
+      if (!KNOWN_INTERACTIVE_IDS.has(interactiveId)) {
+        await pacedReply(message, "Sorry, I didn't recognise that option. Please choose one from the list or type your answer.");
+        return;
+      }
+      if (!isInteractiveIdAllowed(interactiveId, state)) {
+        await pacedReply(message, "That option has expired, please choose from the latest menu.");
+        return;
+      }
+    }
+
     // FIX 3 — registered user typing the trigger again → progress card,
     // never a registration restart. Checked before any stage routing.
     if (isTriggerPhrase(rawBody) && isRegistered(userId)) {
@@ -2116,7 +2313,8 @@ const extractInboundMessages = (body) => {
             text = (m.text && m.text.body) || "";
           } else if (m.type === "interactive") {
             const r = m.interactive?.button_reply || m.interactive?.list_reply || {};
-            text = r.title || r.id || "";
+            // Prefer the id: it is the stable stage input; the title is display-only.
+            text = r.id || r.title || "";
           } else if (m.type === "button") {
             text = m.button?.text || m.button?.payload || "";
           }
@@ -2268,5 +2466,9 @@ module.exports = {
   isRegistered,
   isValidEmail,
   normalizeEmail,
+  sendListTo,
+  sendButtonsTo,
+  sendCtaUrlTo,
+  LIMITS,
   STAGES,
 };

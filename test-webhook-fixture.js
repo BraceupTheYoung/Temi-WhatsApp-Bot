@@ -16,6 +16,10 @@ process.chdir(sandbox);
 fs.writeFileSync(path.join(sandbox, "users_db.json"), JSON.stringify({
   "555000000001": { createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Email Tester One" },
   "555000000002": { createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Email Tester Two" },
+  "555000000030": {
+    createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Menu Tester",
+    language: "English", jobRole: "Teacher",
+  },
 }, null, 2));
 
 process.env.META_PHONE_ID = "1234567890";
@@ -24,6 +28,7 @@ process.env.META_VERIFY_TOKEN = "test-verify-secret";
 process.env.BOT_PORT = "3999";
 
 const graphCalls = [];
+let failNextInteractive = false;
 const realFetch = globalThis.fetch;
 globalThis.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -31,6 +36,14 @@ globalThis.fetch = async (url, opts = {}) => {
     let body = null;
     try { body = JSON.parse(opts.body); } catch { body = opts.body; }
     graphCalls.push({ url: u, body, auth: (opts.headers || {}).Authorization });
+    if (failNextInteractive && body && body.type === "interactive") {
+      failNextInteractive = false;
+      return {
+        ok: false,
+        status: 400,
+        json: async () => ({ error: { code: 100, error_subcode: 33, message: "simulated interactive failure" } }),
+      };
+    }
     if (u.endsWith("/media")) {
       return { ok: true, status: 200, json: async () => ({ id: "test-media-id" }) };
     }
@@ -61,23 +74,23 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   assert.strictEqual(items[0].from, "2348012345678");
   assert.strictEqual(items[0].body, "hello temi");
 
-  // 2) Payload-shape: interactive button reply -> text
+  // 2) Payload-shape: interactive button reply -> id wins over title
   items = bot.extractInboundMessages({
     entry: [{ changes: [{ value: { messages: [{
       from: "2348012345678", id: "wamid.btn1", type: "interactive",
-      interactive: { type: "button_reply", button_reply: { id: "1", title: "Yes" } },
+      interactive: { type: "button_reply", button_reply: { id: "terms_agree", title: "Yes, I agree" } },
     }] } }] }],
   });
-  assert.strictEqual(items[0].body, "Yes");
+  assert.strictEqual(items[0].body, "terms_agree");
 
-  // 3) Payload-shape: interactive list reply -> text
+  // 3) Payload-shape: interactive list reply -> id wins over title
   items = bot.extractInboundMessages({
     entry: [{ changes: [{ value: { messages: [{
       from: "2348012345678", id: "wamid.list1", type: "interactive",
-      interactive: { type: "list_reply", list_reply: { id: "row2", title: "Magic School AI" } },
+      interactive: { type: "list_reply", list_reply: { id: "ai-tools", title: "AI Tools for Teachers" } },
     }] } }] }],
   });
-  assert.strictEqual(items[0].body, "Magic School AI");
+  assert.strictEqual(items[0].body, "ai-tools");
 
   // 4) Payload-shape: status-only receipt -> no inbound
   items = bot.extractInboundMessages({
@@ -155,9 +168,16 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   // ---------------------------------------------------------------------
   const readUsers = () => JSON.parse(fs.readFileSync(path.join(sandbox, "users_db.json"), "utf8"));
   const readOptedIn = () => JSON.parse(fs.readFileSync(path.join(sandbox, "opted_in_users.json"), "utf8"));
-  const lastTextTo = (id) => {
-    const texts = graphCalls.filter((c) => c.body && c.body.type === "text" && c.body.to === id);
-    return texts.length ? texts[texts.length - 1].body.text.body : null;
+  const lastBodyTo = (id) => {
+    const sends = graphCalls.filter((c) => c.body && c.body.to === id &&
+      (c.body.type === "text" || c.body.type === "interactive"));
+    if (!sends.length) return null;
+    const b = sends[sends.length - 1].body;
+    return b.type === "text" ? b.text.body : (b.interactive?.body?.text || null);
+  };
+  const lastInteractiveTo = (id) => {
+    const sends = graphCalls.filter((c) => c.body && c.body.to === id && c.body.type === "interactive");
+    return sends.length ? sends[sends.length - 1].body : null;
   };
   let saySeq = 0;
   const say = (id, body, rawType = "text") =>
@@ -190,7 +210,7 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
     await say(id, reply);
     assert.strictEqual(bot.getUserState(id).stage, bot.STAGES.REGISTRATION, `${reply} should advance`);
     assert.strictEqual(bot.getUserState(id).regField, "fullName", `${reply} should ask for name`);
-    assert.match(lastTextTo(id) || "", /What is your full name\?/);
+    assert.match(lastBodyTo(id) || "", /What is your full name\?/);
     const u = readUsers()[id];
     assert.ok(u && u.agreedToTerms === true, "terms agreement should be stored");
     assert.ok(!u.fullName, "name must not be stored yet");
@@ -203,11 +223,11 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   for (const reply of ["2", "no"]) {
     await say(decl, reply);
     assert.strictEqual(bot.getUserState(decl).welcomeStep, "await_terms");
-    assert.match(lastTextTo(decl) || "", /No problem\. You need to agree to the Terms and Conditions/);
+    assert.match(lastBodyTo(decl) || "", /No problem\. You need to agree to the Terms and Conditions/);
     assert.ok(!(decl in readUsers()), "decline must not create a profile");
   }
   await say(decl, "maybe");
-  assert.strictEqual(lastTextTo(decl), "Please reply with 1 to agree or 2 to decline.");
+  assert.strictEqual(lastBodyTo(decl), "Please reply with 1 to agree or 2 to decline.");
   assert.strictEqual(bot.getUserState(decl).welcomeStep, "await_terms");
   assert.ok(!(decl in readUsers()), "invalid reply must not create a profile");
 
@@ -216,13 +236,13 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   goEmail(mailA);
   for (const bad of ["Fajekobj", "abc@", "@gmail.com", "a@outlook.com"]) {
     await say(mailA, bad);
-    assert.strictEqual(lastTextTo(mailA),
+    assert.strictEqual(lastBodyTo(mailA),
       "That doesn't look like a valid email. Please enter a Gmail or Yahoo address, for example name@gmail.com.");
     assert.strictEqual(bot.getUserState(mailA).regField, "email_input", `${bad} must not advance`);
     assert.ok(!readUsers()[mailA].email, `${bad} must not be saved`);
   }
   await say(mailA, "", "audio");
-  assert.strictEqual(lastTextTo(mailA),
+  assert.strictEqual(lastBodyTo(mailA),
     "That doesn't look like a valid email. Please enter a Gmail or Yahoo address, for example name@gmail.com.");
   assert.strictEqual(bot.getUserState(mailA).regField, "email_input");
   assert.ok(!readUsers()[mailA].email);
@@ -230,7 +250,7 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   await say(mailA, "  NAME@GMAIL.COM  ");
   assert.strictEqual(bot.getUserState(mailA).regField, "province");
   assert.strictEqual(readUsers()[mailA].email, "name@gmail.com");
-  assert.match(lastTextTo(mailA) || "", /Please enter your state/);
+  assert.match(lastBodyTo(mailA) || "", /Please enter your state/);
 
   const mailB = "555000000002";
   goEmail(mailB);
@@ -244,19 +264,173 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   assert.strictEqual(bot.getUserState(flow).welcomeStep, "await_ack");
   await say(flow, "ok");
   assert.strictEqual(bot.getUserState(flow).welcomeStep, "await_terms");
-  assert.match(lastTextTo(flow) || "", /Do you agree to our Terms and Conditions and Privacy Policy\?/);
-  assert.match(lastTextTo(flow) || "", /1\. Yes, I agree\n2\. No, I do not agree/);
+  assert.match(lastBodyTo(flow) || "", /Do you agree to our Terms and Conditions and Privacy Policy\?/);
+  const flowTerms = lastInteractiveTo(flow);
+  assert.deepStrictEqual(
+    flowTerms?.interactive?.action?.buttons?.map((b) => b.reply.title),
+    ["Yes, I agree", "No, I do not agree"]
+  );
   await say(flow, "1");
   assert.strictEqual(bot.getUserState(flow).regField, "fullName");
   await say(flow, "Flow Teacher");
   assert.strictEqual(bot.getUserState(flow).regField, "email_input");
-  assert.match(lastTextTo(flow) || "", /Please enter your email address/);
+  assert.match(lastBodyTo(flow) || "", /Please enter your email address/);
   await say(flow, "not-an-email");
   assert.strictEqual(bot.getUserState(flow).regField, "email_input");
-  assert.match(lastTextTo(flow) || "", /That doesn't look like a valid email/);
+  assert.match(lastBodyTo(flow) || "", /That doesn't look like a valid email/);
   await say(flow, "flow@gmail.com");
   assert.strictEqual(bot.getUserState(flow).regField, "province");
   assert.strictEqual(readUsers()[flow].email, "flow@gmail.com");
+
+  // ---------------------------------------------------------------------
+  // Interactive messages (Group A): helpers, terms buttons, id guard
+  // ---------------------------------------------------------------------
+
+  // 14) Helper payload shapes + limits. Titles/descriptions truncate;
+  //     oversized bodies/labels/row counts/button counts throw.
+  const helperTo = "555000000098";
+  await bot.sendButtonsTo(helperTo, {
+    body: "Pick one",
+    buttons: [
+      { id: "a", title: "A".repeat(30) },
+      { id: "b", title: "B" },
+    ],
+  });
+  const buttonPayload = graphCalls[graphCalls.length - 1].body;
+  assert.strictEqual(buttonPayload.type, "interactive");
+  assert.strictEqual(buttonPayload.interactive.type, "button");
+  assert.strictEqual(buttonPayload.interactive.body.text, "Pick one");
+  assert.deepStrictEqual(buttonPayload.interactive.action.buttons, [
+    { type: "reply", reply: { id: "a", title: "A".repeat(20) } },
+    { type: "reply", reply: { id: "b", title: "B" } },
+  ]);
+
+  await bot.sendListTo(helperTo, {
+    body: "Choose a course",
+    buttonLabel: "Choose",
+    sections: [{
+      title: "Courses",
+      rows: [{ id: "ai-tools", title: "T".repeat(30), description: "D".repeat(90) }],
+    }],
+  });
+  const listPayload = graphCalls[graphCalls.length - 1].body;
+  assert.strictEqual(listPayload.type, "interactive");
+  assert.strictEqual(listPayload.interactive.type, "list");
+  assert.strictEqual(listPayload.interactive.action.button, "Choose");
+  const listRow = listPayload.interactive.action.sections[0].rows[0];
+  assert.strictEqual(listRow.title.length, 24, "row title truncates to 24");
+  assert.strictEqual(listRow.description.length, 72, "row description truncates to 72");
+
+  await bot.sendCtaUrlTo(helperTo, {
+    body: "Read the terms",
+    displayText: "Read Terms",
+    url: "https://example.com/terms",
+  });
+  const ctaPayload = graphCalls[graphCalls.length - 1].body;
+  assert.deepStrictEqual(ctaPayload.interactive, {
+    type: "cta_url",
+    body: { text: "Read the terms" },
+    action: {
+      name: "cta_url",
+      parameters: { display_text: "Read Terms", url: "https://example.com/terms" },
+    },
+  });
+
+  await assert.rejects(
+    () => bot.sendButtonsTo(helperTo, {
+      body: "x".repeat(1025),
+      buttons: [{ id: "a", title: "A" }],
+    }),
+    /1024/
+  );
+  await assert.rejects(
+    () => bot.sendButtonsTo(helperTo, {
+      body: "Pick",
+      buttons: [1, 2, 3, 4].map((n) => ({ id: `b${n}`, title: `B${n}` })),
+    }),
+    /3-button/
+  );
+  await assert.rejects(
+    () => bot.sendListTo(helperTo, {
+      body: "Pick",
+      buttonLabel: "Choose",
+      sections: [{ rows: Array.from({ length: 11 }, (_, i) => ({ id: `r${i}`, title: `R${i}` })) }],
+    }),
+    /10-row/
+  );
+  await assert.rejects(
+    () => bot.sendListTo(helperTo, {
+      body: "Pick",
+      buttonLabel: "B".repeat(21),
+      sections: [{ rows: [{ id: "a", title: "A" }] }],
+    }),
+    /20/
+  );
+
+  // 15) Terms buttons: interactive ids agree/decline; typed replies unchanged.
+  const agreeTap = "555000000013";
+  goTerms(agreeTap);
+  await say(agreeTap, "terms_agree", "interactive");
+  assert.strictEqual(bot.getUserState(agreeTap).regField, "fullName");
+  assert.strictEqual(readUsers()[agreeTap].agreedToTerms, true);
+  assert.match(lastBodyTo(agreeTap) || "", /What is your full name\?/);
+
+  const declineTap = "555000000014";
+  goTerms(declineTap);
+  await say(declineTap, "terms_decline", "interactive");
+  assert.strictEqual(bot.getUserState(declineTap).welcomeStep, "await_terms");
+  assert.match(lastBodyTo(declineTap) || "", /No problem\. You need to agree to the Terms and Conditions/);
+  assert.ok(!(declineTap in readUsers()), "decline tap must not create a profile");
+
+  // Graph failure on the buttons send falls back to the numbered text prompt.
+  const termsFallback = "555000000015";
+  const termsState = bot.getUserState(termsFallback);
+  termsState.stage = bot.STAGES.WELCOME;
+  termsState.welcomeStep = "await_ack";
+  termsState.regField = null;
+  failNextInteractive = true;
+  await say(termsFallback, "ok");
+  assert.strictEqual(bot.getUserState(termsFallback).welcomeStep, "await_terms");
+  assert.match(lastBodyTo(termsFallback) || "", /1\. Yes, I agree\n2\. No, I do not agree/);
+
+  // 16) Guard: unknown id, valid id at wrong stage, cold tap stays silent.
+  const menuUser = "555000000030";
+  const menuState = bot.getUserState(menuUser);
+  menuState.stage = bot.STAGES.MAIN_MENU;
+
+  await say(menuUser, "bogus", "interactive");
+  assert.strictEqual(
+    lastBodyTo(menuUser),
+    "Sorry, I didn't recognise that option. Please choose one from the list or type your answer."
+  );
+  assert.strictEqual(bot.getUserState(menuUser).stage, bot.STAGES.MAIN_MENU);
+
+  await say(menuUser, "quiz", "interactive");
+  assert.strictEqual(
+    lastBodyTo(menuUser),
+    "That option has expired, please choose from the latest menu."
+  );
+  assert.strictEqual(bot.getUserState(menuUser).stage, bot.STAGES.MAIN_MENU);
+
+  menuState.stage = bot.STAGES.AWAITING_FEEDBACK;
+  await say(menuUser, "terms_agree", "interactive");
+  assert.strictEqual(
+    lastBodyTo(menuUser),
+    "That option has expired, please choose from the latest menu."
+  );
+  assert.strictEqual(bot.getUserState(menuUser).stage, bot.STAGES.AWAITING_FEEDBACK);
+  assert.ok(!readUsers()[menuUser].feedback, "wrong-stage tap must not store feedback");
+  menuState.stage = bot.STAGES.MAIN_MENU;
+
+  const coldTap = "555000000099";
+  const coldSendsBefore = graphCalls.filter((c) => c.body && c.body.to === coldTap).length;
+  await say(coldTap, "terms_agree", "interactive");
+  assert.strictEqual(
+    graphCalls.filter((c) => c.body && c.body.to === coldTap).length,
+    coldSendsBefore,
+    "cold interactive tap must not send anything"
+  );
+  assert.ok(!(coldTap in readUsers()), "cold tap must not create a profile");
 
   server.close();
   console.log("✅ webhook fixture: all assertions passed");
