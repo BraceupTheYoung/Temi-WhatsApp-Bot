@@ -432,6 +432,107 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   );
   assert.ok(!(coldTap in readUsers()), "cold tap must not create a profile");
 
+  // ---------------------------------------------------------------------
+  // Interactive messages (Group B): main menu, id taps, quiz intro
+  // ---------------------------------------------------------------------
+
+  // 17) Main menu: typed MENU sends 2 reply buttons (not a numbered list).
+  menuState.stage = bot.STAGES.MAIN_MENU;
+  await say(menuUser, "menu");
+  const menuPayload = lastInteractiveTo(menuUser);
+  assert.ok(menuPayload, "typed MENU should send an interactive menu");
+  assert.strictEqual(menuPayload.interactive.type, "button");
+  assert.strictEqual(
+    menuPayload.interactive.body.text,
+    "I'm *Témí* — Learn AI. Teach Better.\n\nWhat would you like to do?"
+  );
+  assert.deepStrictEqual(menuPayload.interactive.action.buttons, [
+    { type: "reply", reply: { id: "ai-tools", title: "AI Tools Course" } },
+    { type: "reply", reply: { id: "continue", title: "Continue" } },
+  ]);
+
+  // Tapping an option id maps back to the same handler as typing its number.
+  await say(menuUser, "ai-tools", "interactive");
+  assert.strictEqual(bot.getUserState(menuUser).stage, bot.STAGES.TOPIC_INTRO);
+  assert.strictEqual(bot.getUserState(menuUser).currentTopic, "ai-tools");
+
+  // 18) 4+ menu options switch to a list payload.
+  await bot.sendMenuTo("555000000097", {
+    intro: "Pick a track",
+    options: [
+      { id: "a", label: "Alpha", description: "First" },
+      { id: "b", label: "Beta", description: "Second" },
+      { id: "c", label: "Gamma", description: "Third" },
+      { id: "d", label: "Delta", description: "Fourth" },
+    ],
+  });
+  const menuListPayload = graphCalls[graphCalls.length - 1].body;
+  assert.strictEqual(menuListPayload.interactive.type, "list");
+  assert.strictEqual(menuListPayload.interactive.body.text, "Pick a track");
+  assert.deepStrictEqual(
+    menuListPayload.interactive.action.sections[0].rows.map((r) => r.id),
+    ["a", "b", "c", "d"]
+  );
+
+  // 19) Quiz-intro slide sends two buttons and a clean "Ready?" body.
+  const contentDB = require(path.join(__dirname, "content-db.js"));
+  const module1 = contentDB.getTopic("ai-tools").modules[0];
+  const quizIntro = module1.slides.find((s) => {
+    const text = Array.isArray(s.text) ? s.text.join("\n") : String(s.text || "");
+    return /Quiz, Teacher!/.test(text);
+  });
+  assert.ok(quizIntro, "ChatGPT quiz-intro slide exists");
+
+  const quizUser = "555000000031";
+  const quizState = bot.getUserState(quizUser);
+  quizState.stage = bot.STAGES.LEARNING;
+  quizState.currentTopic = "ai-tools";
+  quizState.currentModule = module1;
+  quizState.currentSlide = module1.slides.indexOf(quizIntro);
+  await bot.sendSlide({ from: quizUser }, quizState, quizIntro);
+
+  const quizPayload = lastInteractiveTo(quizUser);
+  assert.ok(quizPayload, "quiz intro should send an interactive payload");
+  assert.strictEqual(quizPayload.interactive.type, "button");
+  assert.strictEqual(
+    quizPayload.interactive.body.text,
+    "🎯 Time for your ChatGPT Quiz, Teacher!\n\nYou have 7 questions to answer. Each question will appear one at a time with immediate feedback.\n\nReady for your quiz?"
+  );
+  assert.deepStrictEqual(quizPayload.interactive.action.buttons, [
+    { type: "reply", reply: { id: "quiz", title: "Take The Quiz" } },
+    { type: "reply", reply: { id: "menu", title: "Back To Main Menu" } },
+  ]);
+
+  // If the buttons send fails, the original slide text (with typed QUIZ/MENU
+  // instructions) is delivered unchanged.
+  failNextInteractive = true;
+  await bot.sendSlide({ from: quizUser }, quizState, quizIntro);
+  const quizTexts = graphCalls
+    .filter((c) => c.body && c.body.to === quizUser && c.body.type === "text")
+    .map((c) => c.body.text.body);
+  const quizFallback = quizTexts[quizTexts.length - 1] || "";
+  assert.match(quizFallback, /Reply \*QUIZ\* to start your quiz!/);
+  assert.match(quizFallback, /Reply \*MENU\* to go back to the main menu\./);
+
+  // 20) Typed QUIZ and MENU still work alongside the buttons.
+  const typedUser = "555000000030";
+  const typedState = bot.getUserState(typedUser);
+  typedState.stage = bot.STAGES.LEARNING;
+  typedState.currentTopic = "ai-tools";
+  typedState.currentModule = module1;
+
+  await say(typedUser, "quiz");
+  assert.strictEqual(bot.getUserState(typedUser).stage, bot.STAGES.QUIZ);
+  assert.match(lastBodyTo(typedUser) || "", /Question 1\//);
+
+  typedState.stage = bot.STAGES.LEARNING;
+  typedState.currentModule = module1;
+  await say(typedUser, "menu");
+  assert.strictEqual(bot.getUserState(typedUser).stage, bot.STAGES.MAIN_MENU);
+  const typedMenuPayload = lastInteractiveTo(typedUser);
+  assert.ok(typedMenuPayload, "typed MENU from learning should send the interactive menu");
+  assert.strictEqual(typedMenuPayload.interactive.type, "button");
+
   server.close();
   console.log("✅ webhook fixture: all assertions passed");
   process.exit(0);

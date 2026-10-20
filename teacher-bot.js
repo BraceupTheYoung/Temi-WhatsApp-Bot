@@ -816,7 +816,7 @@ const resumeWhereLeftOff = async (message) => {
     if (summary.completedModules > 0) {
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
   }
@@ -824,7 +824,7 @@ const resumeWhereLeftOff = async (message) => {
   // 4) Fresh (registered but never started) → main menu
   state.stage = STAGES.MAIN_MENU;
   const mainMenu = getMainMenu();
-  await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+  await sendMainMenu(message);
 };
 
 const handleNewUser = async (message) => {
@@ -883,7 +883,7 @@ const handleWelcome = async (message) => {
     if (msg === "menu") {
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
     // Parked on the progress card: "hello temi" repeat refreshes it,
@@ -951,7 +951,7 @@ const handleWelcome = async (message) => {
     if (msg === "menu") {
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
     console.log(`🔇 Ignoring "${message.body || ""}" from parked user ${userId} — reply CONTINUE, MENU, or "hello temi".`);
@@ -1124,10 +1124,9 @@ const handleRegistration = async (message) => {
         state.regField = null;
         saveData();
 
-        // FIX 2 — one message only (no batching): greeting + menu combined,
-        // then wait for the user's reply.
-        const mainMenu = getMainMenu();
-        await pacedReply(message, `You're all set, ${usersDB[userId].fullName}! 🎉\n\n` + formatMenu(mainMenu, usersDB[userId]?.name));
+        // Greeting first, then the interactive main menu.
+        await pacedReply(message, `You're all set, ${usersDB[userId].fullName}! 🎉`);
+        await sendMainMenu(message);
       } else {
         await pacedReply(message, "Please enter a valid number from the list.");
       }
@@ -1178,6 +1177,49 @@ const sendTermsPrompt = async (message, prefix = "") => {
   }
 };
 
+// Main menu: <=3 options as reply buttons, 4+ as a list. Throws on payload
+// limits so sendMainMenu can fall back to the numbered plain-text menu.
+const sendMenuTo = async (to, { intro, options }) => {
+  if (!Array.isArray(options) || options.length === 0) {
+    throw new Error("menu send: at least one option is required");
+  }
+  if (options.length <= 3) {
+    return await sendButtonsTo(to, {
+      body: intro,
+      buttons: options.map((opt) => ({
+        id: opt.id,
+        title: opt.buttonTitle || opt.label,
+      })),
+    });
+  }
+  return await sendListTo(to, {
+    body: intro,
+    buttonLabel: "Choose an option",
+    sections: [{
+      title: "Main menu",
+      rows: options.map((opt) => ({
+        id: opt.id,
+        title: opt.label,
+        description: opt.description,
+      })),
+    }],
+  });
+};
+
+const sendMainMenu = async (message) => {
+  const userId = message.from;
+  const mainMenu = getMainMenu();
+  try {
+    return await sendMenuTo(userId, {
+      intro: mainMenu.intro || formatMenu(mainMenu, usersDB[userId]?.name),
+      options: mainMenu.options,
+    });
+  } catch (e) {
+    console.error("Main menu interactive send failed, falling back to text:", e?.message || e);
+    return await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+  }
+};
+
 const handleMainMenu = async (message) => {
   const userId = message.from;
   const msg = (message.body || "").toLowerCase();
@@ -1185,7 +1227,7 @@ const handleMainMenu = async (message) => {
   const mainMenu = getMainMenu();
   
   if (msg === "menu") {
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1199,7 +1241,7 @@ const handleMainMenu = async (message) => {
   const quickResponse = getQuickResponse(msg);
   if (quickResponse) {
     await pacedReply(message, quickResponse);
-    await pacedReply(message, "\n" + formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1239,7 +1281,9 @@ const handleMainMenu = async (message) => {
     return;
   }
   
-  const choice = parseInt(msg);
+  // Interactive list/button ids map back to their menu position.
+  const optionIndex = mainMenu.options.findIndex((opt) => opt.id === msg);
+  const choice = optionIndex >= 0 ? optionIndex + 1 : parseInt(msg);
   if (!isNaN(choice) && choice >= 1 && choice <= mainMenu.options.length) {
     const topicId = mainMenu.options[choice - 1].id;
     state.currentTopic = topicId;
@@ -1251,7 +1295,7 @@ const handleMainMenu = async (message) => {
     if (!topic) {
       await pacedReply(message, "Error: Topic not found. Please try again.");
       state.stage = STAGES.MAIN_MENU;
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
     
@@ -1265,7 +1309,8 @@ const handleMainMenu = async (message) => {
       await pacedReply(message, introText + "\n\nReply with *1* to start or *2* to go back.");
     }
   } else {
-    await pacedReply(message, "Please select a valid option (1-" + mainMenu.options.length + ").\n\n" + formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, "Please select a valid option (1-" + mainMenu.options.length + ").");
+    await sendMainMenu(message);
   }
 };
 
@@ -1278,7 +1323,7 @@ const handleToolsList = async (message) => {
   
   if (msg === "menu") {
     state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1305,7 +1350,7 @@ const handleToolsListSelection = async (message) => {
   
   if (msg === "menu" || msg === "3") {
     state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1393,8 +1438,8 @@ const handleTopicIntro = async (message) => {
   if (!topic) {
     console.log("ERROR: Topic is null for", state.currentTopic);
     state.stage = STAGES.MAIN_MENU;
-    const mainMenu = getMainMenu();
-    await pacedReply(message, "Something went wrong. Returning to menu.\n\n" + formatMenu(mainMenu, usersDB[userId]?.name));
+    await pacedReply(message, "Something went wrong. Returning to menu.");
+    await sendMainMenu(message);
     return;
   }
   
@@ -1403,7 +1448,7 @@ const handleTopicIntro = async (message) => {
   if (userInput === "menu" || userInput === "back to main menu" || userInput === "2") {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1424,7 +1469,7 @@ const handleTopicIntro = async (message) => {
       await pacedReply(message, "No content available for this topic yet. Returning to menu.");
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
     
@@ -1435,7 +1480,7 @@ const handleTopicIntro = async (message) => {
       await pacedReply(message, "No slides found for this module. Returning to menu.");
       state.stage = STAGES.MAIN_MENU;
       const mainMenu = getMainMenu();
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
     
@@ -1450,6 +1495,22 @@ const handleTopicIntro = async (message) => {
     // Invalid input - ask again
     await pacedReply(message, "Please reply with *1* to start or *2* to go back.");
   }
+};
+
+// Quiz-intro slides end with typed instructions. Detect that exact shape so
+// only the quiz intro becomes buttons; all other slides keep text/audio.
+const isQuizIntroSlide = (slide) => {
+  const text = Array.isArray(slide?.text) ? slide.text.join("\n") : String(slide?.text || "");
+  return /Quiz, Teacher!/i.test(text) && /\*QUIZ\*/i.test(text);
+};
+const buildQuizPromptBody = (text) => {
+  const cleaned = String(text || "")
+    .split("\n")
+    .filter((line) => !/^\s*Reply \*(?:QUIZ|MENU)\*/i.test(line))
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return `${cleaned}\n\nReady for your quiz?`;
 };
 
 const sendSlide = async (message, state, slide) => {
@@ -1484,12 +1545,27 @@ const sendSlide = async (message, state, slide) => {
   let sendAudio = delivery !== "text";
 
   const textChunks = Array.isArray(slide.text) ? slide.text : [slide.text];
+  const originalText = textChunks.join("\n\n").replace("{name}", getDisplayName(userId));
 
-  if (sendText) {
+  if (sendText && isQuizIntroSlide(slide)) {
+    try {
+      await sendButtonsTo(userId, {
+        body: buildQuizPromptBody(originalText),
+        buttons: [
+          { id: "quiz", title: "Take The Quiz" },
+          { id: "menu", title: "Back To Main Menu" },
+        ],
+      });
+    } catch (e) {
+      console.error("Quiz prompt buttons failed, falling back to original text:", e?.message || e);
+      const ok = await safeReply(originalText);
+      if (!ok) return;
+    }
+  } else if (sendText) {
     for (const chunk of textChunks) {
       let text = chunk.replace("{name}", getDisplayName(userId));
       const ok = await safeReply(text);
-      if (!ok) return; // page dead — stop, don't pile on more sends
+      if (!ok) return; // page dead - stop, don't pile on more sends
     }
   }
 
@@ -1537,7 +1613,7 @@ const handleLearning = async (message) => {
   if (userInput === "menu" || userInput === "back to main menu") {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1588,7 +1664,7 @@ const handleLearning = async (message) => {
   } else if (userInput.includes("back")) {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
   } else {
     const isLastSlide = state.currentSlide === module.slides.length - 1;
     if (isLastSlide) {
@@ -1608,7 +1684,7 @@ const handleQuiz = async (message) => {
   if (userInput.toLowerCase() === "menu") {
     state.stage = STAGES.MAIN_MENU;
     const mainMenu = getMainMenu();
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -1788,7 +1864,7 @@ const handleFeedback = async (message) => {
   // Honor commands instead of capturing them as feedback (skip-and-continue).
   if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
     state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   if (userInput === "share") {
@@ -1799,7 +1875,7 @@ const handleFeedback = async (message) => {
   if (userInput === "skip" || userInput === "no" || userInput === "n") {
     state.stage = STAGES.MAIN_MENU;
     await pacedReply(message, `No problem — thank you for completing the course! 🙏`);
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   if (userInput.length === 0) {
@@ -1814,7 +1890,7 @@ const handleFeedback = async (message) => {
   saveData();
   state.stage = STAGES.MAIN_MENU;
   await pacedReply(message, `Thank you so much for your feedback! 🙏 It helps us make *Témí* better for teachers like you. 💛`);
-  await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+  await sendMainMenu(message);
 };
 
   // SINGLE certificate flow: user typed DONE after Module 3 and is now
@@ -1826,7 +1902,7 @@ const handleFeedback = async (message) => {
     if (/^(menu|2|back)$/i.test(input) || input.toLowerCase().includes("back")) {
       state.awaitingCertConfirm = false;
       state.stage = STAGES.MAIN_MENU;
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
 
@@ -1859,7 +1935,7 @@ const handleFeedback = async (message) => {
     const currentTopic = getTopic(state.currentTopic);
     if (!currentTopic || !currentTopic.modules) {
       state.stage = STAGES.MAIN_MENU;
-      await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+      await sendMainMenu(message);
       return;
     }
     
@@ -1954,7 +2030,7 @@ const handleFeedback = async (message) => {
   // Handle menu / back
   if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
     state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    await sendMainMenu(message);
     return;
   }
   
@@ -2106,7 +2182,7 @@ const handleIncomingMessage = async (message) => {
         if (isRegistered(userId)) {
           state.stage = STAGES.MAIN_MENU;
           const mainMenu = getMainMenu();
-          await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+          await sendMainMenu(message);
           return;
         }
         // New users have no menu yet — silence except via trigger flow.
@@ -2117,7 +2193,7 @@ const handleIncomingMessage = async (message) => {
       } else {
         state.stage = STAGES.MAIN_MENU;
         const mainMenu = getMainMenu();
-        await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+        await sendMainMenu(message);
         return;
       }
     }
@@ -2469,6 +2545,9 @@ module.exports = {
   sendListTo,
   sendButtonsTo,
   sendCtaUrlTo,
+  sendMenuTo,
+  sendMainMenu,
+  sendSlide,
   LIMITS,
   STAGES,
 };

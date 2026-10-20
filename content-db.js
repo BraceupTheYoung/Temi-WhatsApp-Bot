@@ -76,7 +76,7 @@ const contentDB = {
   },
 
   mainMenuOptions: [
-    { id: "ai-tools", label: "AI Tools for Teachers", description: "Learn ChatGPT, Magic School AI & Edu Aide" },
+    { id: "ai-tools", buttonTitle: "AI Tools Course", label: "AI Tools for Teachers", description: "Learn ChatGPT, Magic School AI & Edu Aide" },
     { id: "continue", label: "Continue", description: "Pick up where you stopped" }
   ]
 };
@@ -85,6 +85,7 @@ const getWelcome = () => contentDB.welcome;
 const getRegistration = () => contentDB.registration;
 const getMainMenu = () => {
   const menu = {
+    intro: "I'm *Témí* — Learn AI. Teach Better.\n\nWhat would you like to do?",
     text: "I'm *Témí* — Learn AI. Teach Better.\n\nWhat would you like to do?\n\n",
     options: contentDB.mainMenuOptions
   };
