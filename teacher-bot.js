@@ -392,11 +392,11 @@ const sendCtaUrlTo = async (to, { body, displayText, url, header, footer } = {})
 // ids valid for a different stage get an "expired" notice. Typed text is
 // untouched by this guard.
 const KNOWN_INTERACTIVE_IDS = new Set([
-  "ai-tools", "continue", "terms_agree", "terms_decline", "quiz", "menu",
+  "ai-tools", "continue", "lesson-planning", "terms_agree", "terms_decline", "quiz", "menu",
 ]);
 const isInteractiveIdAllowed = (id, state) => {
   if (id === "menu") return true;
-  if (id === "ai-tools" || id === "continue") return state.stage === STAGES.MAIN_MENU;
+  if (id === "ai-tools" || id === "continue" || id === "lesson-planning") return state.stage === STAGES.MAIN_MENU;
   if (id === "terms_agree" || id === "terms_decline") {
     return (state.stage === STAGES.WELCOME && state.welcomeStep === "await_terms") ||
       (state.stage === STAGES.REGISTRATION && state.regField === "terms");
@@ -504,16 +504,16 @@ const updateLastActive = (userId) => {
   }
 };
 
-const getUserProgressSummary = (userId) => {
+const getUserProgressSummary = (userId, topicId = "ai-tools") => {
   const user = usersDB[userId];
-  if (!user || !user.progress || !user.progress["ai-tools"]) {
+  if (!user || !user.progress || !user.progress[topicId]) {
     return null;
   }
   
-  const progress = user.progress["ai-tools"];
+  const progress = user.progress[topicId];
   const modules = progress.modules;
   
-  const topic = getTopic("ai-tools");
+  const topic = getTopic(topicId);
   if (!topic) return null;
   
   let currentModuleIndex = 0;
@@ -664,8 +664,9 @@ const getDisplayName = (userId) => {
 const buildReturningUserMessage = (userId) => {
   const user = usersDB[userId] || {};
   const name = getDisplayName(userId);
-  const topic = getTopic("ai-tools");
-  const progModules = (user.progress && user.progress["ai-tools"] && user.progress["ai-tools"].modules) || {};
+  const topicId = user.lastTopic || "ai-tools";
+  const topic = getTopic(topicId);
+  const progModules = (user.progress && user.progress[topicId] && user.progress[topicId].modules) || {};
 
   let lines = [];
   if (topic && topic.modules) {
@@ -1982,8 +1983,13 @@ const handleFeedback = async (message) => {
     const moduleId = state.currentModule?.id;
     const quizScore = usersDB[userId]?.progress[topicId]?.modules[moduleId]?.quizScore || 0;
     
-    if (quizScore < 4) {
-      await pacedReply(message, `📝 *Quiz Retake Required*\n\nYour quiz score was ${quizScore}/5. You need a score of *4 or higher* to get your certificate.\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
+    const topicPassMarks = { "ai-tools": 4, "lesson-planning": 5 };
+    const topicTotalQuestions = { "ai-tools": 7, "lesson-planning": 7 };
+    const passMark = topicPassMarks[topicId] || 4;
+    const totalQuestions = topicTotalQuestions[topicId] || 7;
+    
+    if (quizScore < passMark) {
+      await pacedReply(message, `📝 *Quiz Retake Required*\n\nYour quiz score was ${quizScore}/${totalQuestions}. You need a score of *${passMark} or higher* to get your certificate.\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
       return;
     }
     

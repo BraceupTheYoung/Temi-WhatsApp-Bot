@@ -4,6 +4,8 @@
 const fs = require("fs");
 const path = require("path");
 
+const contentDB = require("./content-db.js");
+
 const DATA_DIR = __dirname;
 const USERS_DB = path.join(DATA_DIR, "users_db.json");
 const OPTED_IN = path.join(DATA_DIR, "opted_in_users.json");
@@ -50,8 +52,9 @@ function normalizeLabel(v) {
   return s ? toTitleCase(s) : "";
 }
 
-function summarizeProgress(user) {
-  const modules = (user.progress && user.progress["ai-tools"] && user.progress["ai-tools"].modules) || {};
+function summarizeProgress(user, topicId = "ai-tools") {
+  const topic = contentDB.topics[topicId];
+  const modules = (user.progress && user.progress[topicId] && user.progress[topicId].modules) || {};
   const ids = Object.keys(modules);
   let completed = 0;
   let slidesSeen = 0;
@@ -61,13 +64,13 @@ function summarizeProgress(user) {
     if (m && Array.isArray(m.slides)) slidesSeen += m.slides.length;
     if (m && typeof m.quizScore === "number") quizScores[mid] = m.quizScore;
   }
-  // Course has 3 modules; be tolerant of unknown future topics.
-  const totalModules = 3;
+  // Total modules come from the topic config; fall back to 3 for tolerance.
+  const totalModules = topic?.modules?.length || 3;
   return { completed, totalModules, slidesSeen, quizScores };
 }
 
-function toRow(id, u) {
-  const prog = summarizeProgress(u || {});
+function toRow(id, u, topicId = "ai-tools") {
+  const prog = summarizeProgress(u || {}, topicId);
   const registered = isRegisteredUser(u);
   const hasAnyField =
     !!(u && (u.fullName || u.email || u.province || u.country || u.community || u.gender || u.age || u.language));
@@ -90,7 +93,7 @@ function toRow(id, u) {
     status: registered ? "registered" : hasAnyField ? "partial" : "new",
     modulesCompleted: prog.completed,
     totalModules: prog.totalModules,
-    progressPct: Math.round((prog.completed / prog.totalModules) * 100),
+    progressPct: prog.totalModules > 0 ? Math.round((prog.completed / prog.totalModules) * 100) : 0,
     quizScores: prog.quizScores,
     certificates: Array.isArray(u.certificateRequests) ? u.certificateRequests.length : 0,
     feedback: feedbackText,
@@ -157,15 +160,15 @@ function searchUsers(filters = {}) {
   return { total, limit, offset, users: rows };
 }
 
-function getUserDetail(id) {
+function getUserDetail(id, topicId = "ai-tools") {
   const db = loadJsonSafe(USERS_DB, {});
   const u = db[id];
   if (!u) return null;
   const optedIn = new Set(loadJsonSafe(OPTED_IN, []));
-  const row = toRow(id, u);
+  const row = toRow(id, u, topicId);
   row.optedIn = optedIn.has(id);
   // Full progress detail for the drawer.
-  const modules = ((u.progress || {})["ai-tools"] || {}).modules || {};
+  const modules = (u.progress || {})[topicId]?.modules || {};
   row.modules = modules;
   row.quizState = u.quizState || null;
   row.certificateRequests = u.certificateRequests || [];
@@ -184,12 +187,17 @@ function getStats() {
   let completedAll = 0;
   let certsIssued = 0;
   let inQuiz = 0;
+  // Per-course completion tracking
+  const courseCompletion = {
+    "ai-tools": { completed: 0, totalModules: 0, completedAll: 0, certificates: 0 },
+    "lesson-planning": { completed: 0, totalModules: 0, completedAll: 0, certificates: 0 },
+  };
   for (const r of rows) {
     if (r.status === "registered") registered++;
     else partial++;
-    if (r.modulesCompleted >= r.totalModules) completedAll++;
     certsIssued += r.certificates;
     if (r.inQuiz) inQuiz++;
+    if (r.modulesCompleted >= r.totalModules) completedAll++;
     // Grouped on NORMALIZED values so "oyo"/"OYo"/"Oyo State" merge.
     // Raw user input is preserved in rows/CSV; only aggregation is cleaned.
     const st = normalizeState(r.province);
@@ -202,6 +210,18 @@ function getStats() {
     if (ge) byGender[ge] = (byGender[ge] || 0) + 1;
     if (ag) byAge[ag] = (byAge[ag] || 0) + 1;
     if (cm) byCommunity[cm] = (byCommunity[cm] || 0) + 1;
+    // Per-course stats
+    for (const topicId of ["ai-tools", "lesson-planning"]) {
+      const prog = r.progress && r.progress[topicId];
+      const total = prog?.totalModules || 0;
+      const completed = prog?.completed || 0;
+      if (total > 0) {
+        courseCompletion[topicId].totalModules += total;
+        courseCompletion[topicId].completed += completed;
+        if (completed >= total) courseCompletion[topicId].completedAll += 1;
+      }
+      courseCompletion[topicId].certificates += r.certificates;
+    }
   }
   const top = (obj) =>
     Object.entries(obj)
@@ -221,6 +241,7 @@ function getStats() {
     byGender: top(byGender),
     byAge: top(byAge),
     byCommunity: top(byCommunity),
+    courseCompletion,
     generatedAt: new Date().toISOString(),
   };
 }

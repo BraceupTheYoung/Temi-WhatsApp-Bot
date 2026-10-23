@@ -1,6 +1,9 @@
 const chatgptModule = require("./content/module1-chatgpt");
 const magicschoolModule = require("./content/module2-magicschool");
 const eduaideModule = require("./content/module3-eduaide");
+const lessonplanningModule1 = require("./content/module-lessonplanning-m1");
+const lessonplanningModule2 = require("./content/module-lessonplanning-m2");
+const lessonplanningModule3 = require("./content/module-lessonplanning-m3");
 
 const contentDB = {
   welcome: {
@@ -64,6 +67,15 @@ const contentDB = {
         magicschoolModule,
         eduaideModule
       ]
+    },
+    "lesson-planning": {
+      title: "Using AI to Write Lesson Plans & Notes",
+      intro: "Welcome to the Using AI to Write Lesson Plans & Notes course! You'll learn how to use AI to write complete lesson notes, schemes of work, and differentiate for your class — all in minutes instead of hours.\n\nEach module has step-by-step lessons with text and a quiz. Let's get started!",
+      modules: [
+        lessonplanningModule1,
+        lessonplanningModule2,
+        lessonplanningModule3
+      ]
     }
   },
 
@@ -72,11 +84,12 @@ const contentDB = {
 
     certificate: "🎓 *CERTIFICATE REQUEST RECEIVED!*\n\nThank you! We have received your name and email. 🎉\n\nYour Certificate of Completion for the *AI Tools for Teachers Programme* will be prepared and sent to you manually.\n\nYou will receive your certificate via email soon!\n\n─────────────────────────────────\n\n*Témí* says: Congratulations on your achievement! 🎉\n\nReply *SHARE* to get a message to share with colleagues.\nReply *MENU* to go back to the main menu.",
 
-    share: "Here is a message you can copy and share with your fellow teachers right now! 👇\n\n─────────────────────────────────\n\n📲 COPY AND SHARE THIS MESSAGE:\n\n\"Hey Teacher! 👋\n\nI just discovered *Témí* — the AI for Teachers Training on WhatsApp — and it completely changed how I think about using technology in my classroom!\n\n*Témí* says: 'Learn AI. Teach Better.'\n\nI learned how to use powerful AI tools like ChatGPT, Magic School AI, and Edu Aide — all specifically for teaching.\n\nI now know how to:\n✅ Plan lessons in minutes instead of hours\n✅ Create quizzes and assessments instantly\n✅ Write personalised student feedback at scale\n✅ Support diverse learners in my classroom\n✅ Use AI responsibly and ethically\n\nThe best part? It's FREE and you can do it right here on WhatsApp, at your own pace!\n\nType 'Hi' to start your journey with *Témí*! 🚀\n\nTrust me — your teaching will never be the same again. 💛\"\n\n─────────────────────────────────\n\nFeel free to send this to your school WhatsApp group, your department colleagues, or any teacher you know who would benefit! 🎓\n\nThe more teachers we empower, the better our students' futures become. 💛\n\nReply *CERTIFICATE* to get your certificate 🏆\nReply *MENU* to go back to the main menu 🏠"
+    share: "Here is a message you can copy and share with your fellow teachers right now! 👇\n\n─────────────────────────────────\n\n📲 COPY AND SHARE THIS MESSAGE:\n\n\"Hey Teacher! 👋\n\nI just discovered *Témí* — the AI for Teachers Training on WhatsApp — and it completely changed how I think about using technology in my classroom!\n\n*Témí* says: 'Learn AI. Teach Better.'\n\nI learned how to use powerful AI tools like ChatGPT, Magic School AI, and Edu Aide — all specifically for teaching.\n\nI now know how to:\n✅ Plan lessons in minutes instead of hours\n✅ Create quizzes and assessments instantly\n✅ Write personalised student feedback at scale\n✅ Support diverse learners in my classroom\n✅ Use AI responsibly and ethically\n\nThe best part? It's FREE and you can do it right here on WhatsApp, at your own pace!\n\nMessage Temi and say Hello Temi to start your journey. 🚀\n\nTrust me — your teaching will never be the same again. 💛\"\n\n─────────────────────────────────\n\nFeel free to send this to your school WhatsApp group, your department colleagues, or any teacher you know who would benefit! 🎓\n\nThe more teachers we empower, the better our students' futures become. 💛\n\nReply *CERTIFICATE* to get your certificate 🏆\nReply *MENU* to go back to the main menu 🏠"
   },
 
   mainMenuOptions: [
     { id: "ai-tools", buttonTitle: "AI Tools Course", label: "AI Tools for Teachers", description: "Learn ChatGPT, Magic School AI & Edu Aide" },
+    { id: "lesson-planning", buttonTitle: "Lesson Planning", label: "Using AI to Write Lesson Plans & Notes", description: "Write lesson notes, schemes & differentiate with AI" },
     { id: "continue", label: "Continue", description: "Pick up where you stopped" }
   ]
 };
