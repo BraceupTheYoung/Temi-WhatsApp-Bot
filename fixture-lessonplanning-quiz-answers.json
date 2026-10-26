@@ -1,0 +1,221 @@
+[
+  {
+    "module": "m1",
+    "question": "Q1",
+    "options": [
+      "The topic is too difficult for an AI to understand",
+      "The prompt is too long and detailed",
+      "The prompt lacks role, context, structure, and constraints — AI will produce something generic and not suited to a Nigerian classroom",
+      "ChatGPT does not work for science topics"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m1",
+    "question": "Q2",
+    "options": [
+      "It thinks creatively like a human teacher and draws on personal experience",
+      "It analyses the words you typed, searches patterns in its training data, and predicts the most relevant response word by word",
+      "It searches the internet for the best existing lesson plan on your topic",
+      "It copies lesson notes written by other teachers and sends them to you"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m1",
+    "question": "Q3",
+    "options": [
+      "Role",
+      "Format",
+      "Context — especially school resources, class size, and student language background",
+      "Task"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m1",
+    "question": "Q4",
+    "options": [
+      "Delete the entire result and start a completely new chat from scratch",
+      "Accept the lesson note as it is — changing it will confuse the AI",
+      "Stay in the same chat and give a follow-up instruction asking AI to replace only the class activity with something suitable for a large class",
+      "Stop using AI for lesson planning"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m1",
+    "question": "Q5",
+    "options": [
+      "Write a lesson on photosynthesis",
+      "Write a JSS2 science lesson",
+      "Act as an experienced Nigerian junior secondary school Science teacher. Write a complete 40-minute lesson note on Photosynthesis for JSS 2 students in a public school in Ogun State. Class size is 50. No projector or internet. Many students speak Yoruba as first language. Follow NERDC curriculum. Include all 10 standard lesson note sections. Use Nigerian everyday examples.",
+      "Write a lesson plan, scheme of work, quiz, parent letter and differentiated materials on photosynthesis for JSS2"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m1",
+    "question": "Q6",
+    "options": [
+      "True",
+      "False"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m1",
+    "question": "Q7",
+    "options": [
+      "True",
+      "False"
+    ],
+    "answer": 1
+  },
+  {
+    "module": "m2",
+    "question": "Q1",
+    "options": [
+      "A lesson plan is longer and more detailed than a lesson note",
+      "A lesson plan is a brief summary of what will be taught, while a lesson note is the full, detailed document showing exactly how it will be taught step by step",
+      "A lesson plan is used in the classroom while a lesson note is submitted to the head teacher",
+      "There is no difference — they are the same document with different names"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m2",
+    "question": "Q2",
+    "options": [
+      "Please simplify the language — use shorter sentences",
+      "Please replace all examples with ones drawn from everyday Nigerian life — local markets, familiar Nigerian names, and situations students would recognise in Kano State",
+      "Please extend the lesson to cover more topics",
+      "Please reduce the number of learning objectives from 3 to 2"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m2",
+    "question": "Q3",
+    "options": [
+      "Lesson notes first → Weekly scheme → Termly scheme",
+      "Weekly scheme first → Termly scheme → Lesson notes",
+      "Termly scheme first → Weekly scheme → Lesson notes",
+      "All three documents should be produced at the same time in a single AI prompt"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m2",
+    "question": "Q4",
+    "options": [
+      "Discard the result and write the lesson note manually",
+      "Accept the result as it is — WAEC-format questions are not important",
+      "Use Magic School AI's Assessment Question Generator as a separate tool to produce 5 WAEC-format questions, then combine it with the lesson plan result",
+      "Start a completely new session and retype all the details from scratch"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m2",
+    "question": "Q5",
+    "options": [
+      "Use it only for lessons in sensitive subjects like History and Government",
+      "Use it for every AI-generated lesson note before using it in class — checking accuracy, curriculum alignment, local examples, student personalisation, timing, and professional voice",
+      "Use it only when submitting lesson notes to the head teacher — not for everyday classroom use",
+      "Use it only if the AI-generated result looks different from what you expected"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m2",
+    "question": "Q6",
+    "options": [
+      "True",
+      "False"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m2",
+    "question": "Q7",
+    "options": [
+      "True",
+      "False"
+    ],
+    "answer": 1
+  },
+  {
+    "module": "m3",
+    "question": "Q1",
+    "options": [
+      "A hook is a type of classroom punishment for students who misbehave",
+      "A hook is an engaging opening in the first 60 seconds of a lesson that grabs student attention and makes them immediately curious about what they are about to learn",
+      "A hook is the assignment given at the end of a lesson",
+      "A hook is a question asked during the evaluation section of a lesson"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m3",
+    "question": "Q2",
+    "options": [
+      "Produce a single version of the activity and hope all students can manage it",
+      "Use one AI prompt to generate three versions of the same activity simultaneously — a simplified version for struggling learners, a standard version for average students, and an extension version for advanced students",
+      "Teach three completely separate lessons for three different ability groups on three different days",
+      "Only differentiate for students who have formally been identified as slow learners by the school"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m3",
+    "question": "Q3",
+    "options": [
+      "Formative assessment is always written, while summative assessment is always oral",
+      "Formative assessment is used during the lesson to check understanding in real time, while summative assessment is used at the end of a unit or term to measure overall achievement",
+      "Formative assessment is only for primary school students, while summative assessment is only for secondary students",
+      "There is no difference — both terms describe the same thing"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m3",
+    "question": "Q4",
+    "options": [
+      "Use the comment as it is — AI feedback is always better than teacher-written feedback",
+      "Discard the comment and write all feedback manually in future",
+      "Use a refinement prompt asking AI to rewrite the comment to be encouraging, constructive, and to include 3 specific, actionable steps the student can take to improve",
+      "Give the student no feedback and simply return the marked work"
+    ],
+    "answer": 3
+  },
+  {
+    "module": "m3",
+    "question": "Q5",
+    "options": [
+      "It is used to generate lesson notes for the following week",
+      "It is a structured AI-assisted reflection that reviews the teaching week, identifies what to carry forward and what to change, and produces a specific action plan for the week ahead",
+      "It is used to generate a termly scheme of work at the end of each school week",
+      "It is a prompt that generates quiz questions for students to complete every Friday"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m3",
+    "question": "Q6",
+    "options": [
+      "True",
+      "False"
+    ],
+    "answer": 2
+  },
+  {
+    "module": "m3",
+    "question": "Q7",
+    "options": [
+      "True",
+      "False"
+    ],
+    "answer": 1
+  }
+]
