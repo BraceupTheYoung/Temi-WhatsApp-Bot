@@ -448,6 +448,7 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   );
   assert.deepStrictEqual(menuPayload.interactive.action.buttons, [
     { type: "reply", reply: { id: "ai-tools", title: "AI Tools Course" } },
+    { type: "reply", reply: { id: "lesson-planning", title: "Lesson Planning" } },
     { type: "reply", reply: { id: "continue", title: "Continue" } },
   ]);
 
@@ -532,6 +533,30 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   const typedMenuPayload = lastInteractiveTo(typedUser);
   assert.ok(typedMenuPayload, "typed MENU from learning should send the interactive menu");
   assert.strictEqual(typedMenuPayload.interactive.type, "button");
+
+  // 21) Lesson-planning quiz answers match the committed fixture JSON.
+  //     Each answer index must point at the exact source option TEXT.
+  const quizFixture = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "fixture-lessonplanning-quiz-answers.json"), "utf8")
+  );
+  assert.strictEqual(quizFixture.length, 21, "fixture should cover all 21 questions");
+  const lpMod1 = contentDB.getTopic("lesson-planning").modules[0];
+  const lpMod2 = contentDB.getTopic("lesson-planning").modules[1];
+  const lpMod3 = contentDB.getTopic("lesson-planning").modules[2];
+  const lpModules = { m1: lpMod1, m2: lpMod2, m3: lpMod3 };
+  for (const row of quizFixture) {
+    const mod = lpModules[row.module];
+    assert.ok(mod, `fixture module ${row.module} should exist`);
+    const index = Number(row.question.replace(/^Q/, "")) - 1;
+    const question = mod.questions[index];
+    assert.ok(question, `${row.module} ${row.question} should exist`);
+    assert.deepStrictEqual(question.options, row.options,
+      `${row.module} ${row.question} options should match the source`);
+    assert.strictEqual(question.answer, row.answer,
+      `${row.module} ${row.question} answer index should match the fixture`);
+    assert.strictEqual(question.options[question.answer - 1], row.options[row.answer - 1],
+      `${row.module} ${row.question} answer should point at the source option text`);
+  }
 
   server.close();
   console.log("✅ webhook fixture: all assertions passed");
