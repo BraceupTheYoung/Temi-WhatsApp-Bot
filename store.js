@@ -53,7 +53,7 @@ function normalizeLabel(v) {
 }
 
 function summarizeProgress(user, topicId = "ai-tools") {
-  const topic = contentDB.topics[topicId];
+  const topic = contentDB.getTopic(topicId);
   const modules = (user.progress && user.progress[topicId] && user.progress[topicId].modules) || {};
   const ids = Object.keys(modules);
   let completed = 0;
