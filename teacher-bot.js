@@ -1849,16 +1849,21 @@ const handleCompleted = async (message) => {
   const completion = getCompletion();
 
   const sendCertificateNow = async (certName) => {
+    const courseTopicId = state.currentTopic || usersDB[userId]?.lastTopic || "ai-tools";
+    const courseTitle = getTopic(courseTopicId)?.title || "AI Tools for Teachers";
     try {
       await pacedReply(message, `⏳ Generating your certificate for *${certName}*...`);
-      const { filePath, certId } = await generateCertificatePDF(certName);
-      await sendDocumentFile(message, filePath, `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *AI Tools for Teachers* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`, `${certName}-certificate.pdf`);
+      const { filePath, certId } = await generateCertificatePDF(certName, { course: courseTitle });
+      await sendDocumentFile(message, filePath, `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *${courseTitle}* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`, `${certName}-certificate.pdf`);
       if (!usersDB[userId].certificateRequests) {
         usersDB[userId].certificateRequests = [];
       }
       usersDB[userId].certificateRequests.push({
         name: certName,
         email: usersDB[userId].email || "",
+        topicId: courseTopicId,
+        topicTitle: courseTitle,
+        course: courseTitle,
         certId,
         file: filePath,
         date: new Date().toISOString()
@@ -1990,7 +1995,7 @@ const handleFeedback = async (message) => {
   // ALL modules are complete. Never auto-generates. Asks for name
   // confirmation first; cert generates on YES / name reply (see above).
   if (userInput === "done" || userInput === "certificate" || userInput === "cert") {
-    const topicId = state.currentTopic || "ai-tools";
+    const topicId = state.currentTopic || usersDB[userId]?.lastTopic || "ai-tools";
     const topic = getTopic(topicId);
     const topicModules = topic?.modules || [];
     const progModules = usersDB[userId]?.progress[topicId]?.modules || {};
@@ -2003,16 +2008,19 @@ const handleFeedback = async (message) => {
       return;
     }
 
-    const moduleId = state.currentModule?.id;
-    const quizScore = usersDB[userId]?.progress[topicId]?.modules[moduleId]?.quizScore || 0;
-    
     const topicPassMarks = { "ai-tools": 4, "lesson-planning": 5 };
-    const topicTotalQuestions = { "ai-tools": 7, "lesson-planning": 7 };
     const passMark = topicPassMarks[topicId] || 4;
-    const totalQuestions = topicTotalQuestions[topicId] || 7;
-    
-    if (quizScore < passMark) {
-      await pacedReply(message, `📝 *Quiz Retake Required*\n\nYour quiz score was ${quizScore}/${totalQuestions}. You need a score of *${passMark} or higher* to get your certificate.\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
+    const belowPass = topicModules.filter((m) => {
+      const score = progModules[m.id]?.quizScore || 0;
+      return score < passMark;
+    });
+
+    if (belowPass.length > 0) {
+      const details = belowPass.map((m) => {
+        const score = progModules[m.id]?.quizScore || 0;
+        return `• ${m.title}: ${score}/${m.questions.length}`;
+      }).join("\n");
+      await pacedReply(message, `📝 *Quiz Retake Required*\n\nYou need at least *${passMark}* correct in every module before your certificate can be issued.\n\n${details}\n\n━━━━━━━━━━━━━━━━━━━━\n\nReply *RETAKE* to try the quiz again.\nReply *MENU* to go back to the main menu.`);
       return;
     }
     
