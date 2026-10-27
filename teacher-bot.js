@@ -780,14 +780,17 @@ const sendReturningUserMenu = async (message) => {
 const resumeWhereLeftOff = async (message) => {
   const userId = message.from;
   const state = getUserState(userId);
-  const topic = getTopic("ai-tools");
+  const user = usersDB[userId] || {};
+  const topicId = user.lastTopic || user.quizState?.topicId ||
+    Object.keys(user.progress || {})[0] || "ai-tools";
+  const topic = getTopic(topicId);
 
   // 1) Mid-quiz → resume exact question
   const qs = usersDB[userId]?.quizState;
   if (qs && qs.inQuiz && topic) {
     const module = topic.modules.find((m) => m.id === qs.moduleId);
     if (module && module.questions && module.questions[qs.questionIndex]) {
-      state.currentTopic = "ai-tools";
+      state.currentTopic = topicId;
       state.currentModule = module;
       state.currentQuizQuestion = qs.questionIndex;
       state.quizAnswers = [];
@@ -800,11 +803,11 @@ const resumeWhereLeftOff = async (message) => {
   }
 
   // 2) Mid-module → resume exact slide
-  const summary = getUserProgressSummary(userId);
+  const summary = getUserProgressSummary(userId, topicId);
   if (summary && topic) {
     const module = topic.modules[summary.currentModuleIndex];
     if (module && module.slides && module.slides[summary.currentSlideIndex]) {
-      state.currentTopic = "ai-tools";
+      state.currentTopic = topicId;
       state.currentModule = module;
       state.currentSlide = summary.currentSlideIndex;
       state.stage = STAGES.LEARNING;
@@ -864,7 +867,8 @@ const shouldShowWelcomeBack = (userId) => {
   if (!user || !user.lastActive) return false;
   
   const daysSinceActive = (Date.now() - user.lastActive) / (1000 * 60 * 60 * 24);
-  return daysSinceActive >= SHOULD_WELCOME_BACK_DAYS && user.progress && user.progress["ai-tools"];
+  const topicId = user.lastTopic || Object.keys(user.progress || {})[0];
+  return daysSinceActive >= SHOULD_WELCOME_BACK_DAYS && !!topicId && !!user.progress?.[topicId];
 };
 
 const handleWelcome = async (message) => {
@@ -1365,7 +1369,8 @@ const handleToolsListSelection = async (message) => {
   const msg = (message.body || "").toLowerCase().trim();
   const state = getUserState(userId);
   const mainMenu = getMainMenu();
-  const topic = getTopic("ai-tools");
+  const topicId = usersDB[userId]?.lastTopic || "ai-tools";
+  const topic = getTopic(topicId);
   
   if (msg === "menu" || msg === "3") {
     state.stage = STAGES.MAIN_MENU;
@@ -1375,10 +1380,10 @@ const handleToolsListSelection = async (message) => {
   
   // Option 1: Continue from where left off
   if (msg === "1" || msg.includes("continue")) {
-    const summary = getUserProgressSummary(userId);
+    const summary = getUserProgressSummary(userId, topicId);
     if (summary && summary.currentModuleIndex < topic.modules.length) {
       const module = topic.modules[summary.currentModuleIndex];
-      state.currentTopic = "ai-tools";
+      state.currentTopic = topicId;
       state.currentModule = module;
       state.currentSlide = summary.currentSlideIndex;
       state.stage = STAGES.LEARNING;
@@ -2229,13 +2234,15 @@ const handleIncomingMessage = async (message) => {
     }
     
     if (userInput === "continue" && state.stage !== STAGES.WELCOME && state.stage !== STAGES.NEW && usersDB[userId]?.progress) {
-      // FIX 3 — CONTINUE resumes quiz first, then module slide.
+      // FIX 3 — CONTINUE resumes the user's last course, quiz first.
       const qs = usersDB[userId]?.quizState;
-      const topic = getTopic("ai-tools");
+      const continueTopicId = usersDB[userId]?.lastTopic || qs?.topicId ||
+        Object.keys(usersDB[userId]?.progress || {})[0] || "ai-tools";
+      const topic = getTopic(continueTopicId);
       if (qs && qs.inQuiz && topic) {
         const qModule = topic.modules.find((m) => m.id === qs.moduleId);
         if (qModule && qModule.questions && qModule.questions[qs.questionIndex]) {
-          state.currentTopic = "ai-tools";
+          state.currentTopic = continueTopicId;
           state.currentModule = qModule;
           state.currentQuizQuestion = qs.questionIndex;
           state.quizAnswers = [];
@@ -2246,11 +2253,11 @@ const handleIncomingMessage = async (message) => {
           return;
         }
       }
-      const summary = getUserProgressSummary(userId);
+      const summary = getUserProgressSummary(userId, continueTopicId);
       if (summary && topic) {
         const module = topic.modules[summary.currentModuleIndex];
         if (module) {
-          state.currentTopic = "ai-tools";
+          state.currentTopic = continueTopicId;
           state.currentModule = module;
           state.currentSlide = summary.currentSlideIndex;
           state.stage = STAGES.LEARNING;
