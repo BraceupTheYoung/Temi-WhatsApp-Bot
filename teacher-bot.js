@@ -1246,9 +1246,16 @@ const handleMainMenu = async (message) => {
     return;
   }
   
-  // Option 2 - My Progress / Continue Learning
-  if (msg === "2" || msg.includes("continue") || msg.includes("progress") || msg.includes("my progress")) {
-    const summary = getUserProgressSummary(userId);
+  // "continue" (word or Continue button) resumes where the user left off.
+  if (msg === "continue") {
+    await resumeWhereLeftOff(message);
+    return;
+  }
+
+  // "progress" (word) opens My Progress; typed numbers follow the displayed
+  // menu order below (1 = AI Tools, 2 = Lesson Planning, 3 = Continue).
+  if (msg.includes("progress") || msg.includes("my progress")) {
+    const summary = getUserProgressSummary(userId, usersDB[userId]?.lastTopic || "ai-tools");
     const mainMenu = getMainMenu();
     
     if (summary && summary.completedModules > 0) {
@@ -1286,8 +1293,19 @@ const handleMainMenu = async (message) => {
   const optionIndex = mainMenu.options.findIndex((opt) => opt.id === msg);
   const choice = optionIndex >= 0 ? optionIndex + 1 : parseInt(msg);
   if (!isNaN(choice) && choice >= 1 && choice <= mainMenu.options.length) {
-    const topicId = mainMenu.options[choice - 1].id;
+    const selectedOption = mainMenu.options[choice - 1];
+    // The Continue option resumes the user's last course instead of being
+    // treated as a topic id (there is no "continue" topic in contentDB).
+    if (selectedOption.id === "continue") {
+      await resumeWhereLeftOff(message);
+      return;
+    }
+    const topicId = selectedOption.id;
     state.currentTopic = topicId;
+    if (usersDB[userId]) {
+      usersDB[userId].lastTopic = topicId;
+      saveData();
+    }
     state.stage = STAGES.TOPIC_INTRO;
     
     console.log("Selected topic:", topicId);
