@@ -69,6 +69,25 @@ function summarizeProgress(user, topicId = "ai-tools") {
   return { completed, totalModules, slidesSeen, quizScores };
 }
 
+// Per-course summaries for the dashboard. The course list is derived from
+// content-db.js, so a new course appears without changing this file.
+function summarizeCourses(user) {
+  const courses = {};
+  for (const course of contentDB.getCourses()) {
+    const prog = summarizeProgress(user || {}, course.id);
+    courses[course.id] = {
+      id: course.id,
+      title: course.title,
+      shortTitle: course.shortTitle,
+      completed: prog.completed,
+      totalModules: prog.totalModules,
+      progressPct: prog.totalModules > 0 ? Math.round((prog.completed / prog.totalModules) * 100) : 0,
+      quizScores: prog.quizScores,
+    };
+  }
+  return courses;
+}
+
 function toRow(id, u, topicId = "ai-tools") {
   const prog = summarizeProgress(u || {}, topicId);
   const registered = isRegisteredUser(u);
@@ -95,6 +114,7 @@ function toRow(id, u, topicId = "ai-tools") {
     totalModules: prog.totalModules,
     progressPct: prog.totalModules > 0 ? Math.round((prog.completed / prog.totalModules) * 100) : 0,
     quizScores: prog.quizScores,
+    courses: summarizeCourses(u),
     certificates: Array.isArray(u.certificateRequests) ? u.certificateRequests.length : 0,
     feedback: feedbackText,
     feedbackAt: (u && u.feedback && u.feedback.at) || null,
@@ -167,7 +187,35 @@ function getUserDetail(id, topicId = "ai-tools") {
   const optedIn = new Set(loadJsonSafe(OPTED_IN, []));
   const row = toRow(id, u, topicId);
   row.optedIn = optedIn.has(id);
-  // Full progress detail for the drawer.
+  // Per-course module detail for the drawer: every defined module is shown,
+  // with saved progress, completion and quiz score where present.
+  for (const course of contentDB.getCourses()) {
+    const summary = row.courses[course.id];
+    if (!summary) continue;
+    const saved = (u.progress || {})[course.id]?.modules || {};
+    const defs = contentDB.getTopic(course.id)?.modules || [];
+    summary.modules = {};
+    for (const def of defs) {
+      const m = saved[def.id] || {};
+      summary.modules[def.id] = {
+        title: def.title || def.id,
+        slides: Array.isArray(m.slides) ? m.slides : [],
+        completed: !!m.completed,
+        quizScore: typeof m.quizScore === "number" ? m.quizScore : null,
+      };
+    }
+    // Keep any saved module that is no longer in the course definition.
+    for (const [mid, m] of Object.entries(saved)) {
+      if (summary.modules[mid]) continue;
+      summary.modules[mid] = {
+        title: (m && m.title) || mid,
+        slides: Array.isArray(m && m.slides) ? m.slides : [],
+        completed: !!(m && m.completed),
+        quizScore: m && typeof m.quizScore === "number" ? m.quizScore : null,
+      };
+    }
+  }
+  // Legacy single-course field, kept for older clients.
   const modules = (u.progress || {})[topicId]?.modules || {};
   row.modules = modules;
   row.quizState = u.quizState || null;
@@ -184,20 +232,34 @@ function getStats() {
   const byCommunity = {};
   let registered = 0;
   let partial = 0;
-  let completedAll = 0;
   let certsIssued = 0;
   let inQuiz = 0;
-  // Per-course completion tracking
-  const courseCompletion = {
-    "ai-tools": { completed: 0, totalModules: 0, completedAll: 0, certificates: 0 },
-    "lesson-planning": { completed: 0, totalModules: 0, completedAll: 0, certificates: 0 },
-  };
+  let completedBoth = 0;
+  // Per-course completion tracking. Courses come from content-db.js so a new
+  // course is included automatically.
+  const courses = contentDB.getCourses().map((c) => ({
+    ...c,
+    completedAll: 0,
+    completedModules: 0,
+    totalUserModules: 0,
+  }));
+  const courseById = new Map(courses.map((c) => [c.id, c]));
   for (const r of rows) {
     if (r.status === "registered") registered++;
     else partial++;
     certsIssued += r.certificates;
     if (r.inQuiz) inQuiz++;
-    if (r.modulesCompleted >= r.totalModules) completedAll++;
+    let allCoursesComplete = courses.length > 0;
+    for (const c of courses) {
+      const cp = r.courses && r.courses[c.id];
+      const completed = cp ? cp.completed : 0;
+      const total = cp ? cp.totalModules : c.totalModules;
+      c.completedModules += completed;
+      c.totalUserModules += total;
+      if (total > 0 && completed >= total) c.completedAll++;
+      else allCoursesComplete = false;
+    }
+    if (allCoursesComplete) completedBoth++;
     // Grouped on NORMALIZED values so "oyo"/"OYo"/"Oyo State" merge.
     // Raw user input is preserved in rows/CSV; only aggregation is cleaned.
     const st = normalizeState(r.province);
@@ -210,30 +272,31 @@ function getStats() {
     if (ge) byGender[ge] = (byGender[ge] || 0) + 1;
     if (ag) byAge[ag] = (byAge[ag] || 0) + 1;
     if (cm) byCommunity[cm] = (byCommunity[cm] || 0) + 1;
-    // Per-course stats
-    for (const topicId of ["ai-tools", "lesson-planning"]) {
-      const prog = r.progress && r.progress[topicId];
-      const total = prog?.totalModules || 0;
-      const completed = prog?.completed || 0;
-      if (total > 0) {
-        courseCompletion[topicId].totalModules += total;
-        courseCompletion[topicId].completed += completed;
-        if (completed >= total) courseCompletion[topicId].completedAll += 1;
-      }
-      courseCompletion[topicId].certificates += r.certificates;
-    }
   }
   const top = (obj) =>
     Object.entries(obj)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
       .map(([name, count]) => ({ name, count }));
+  // Legacy field: previously meant "completed all" for the default (AI Tools)
+  // course. Keep the name/value for older clients; new UI uses `courses`.
+  const aiTools = courseById.get("ai-tools");
+  const completedAll = aiTools ? aiTools.completedAll : 0;
+  const courseCompletion = {};
+  for (const c of courses) {
+    courseCompletion[c.id] = {
+      completed: c.completedModules,
+      totalModules: c.totalUserModules,
+      completedAll: c.completedAll,
+    };
+  }
   return {
     total: rows.length,
     registered,
     partial,
     optedIn: rows.filter((r) => r.optedIn).length,
     completedAll,
+    completedBoth,
     certsIssued,
     inQuiz,
     byProvince: top(byProvince),
@@ -241,6 +304,14 @@ function getStats() {
     byGender: top(byGender),
     byAge: top(byAge),
     byCommunity: top(byCommunity),
+    courses: courses.map((c) => ({
+      id: c.id,
+      title: c.title,
+      shortTitle: c.shortTitle,
+      totalModules: c.totalModules,
+      completedAll: c.completedAll,
+      completedModules: c.completedModules,
+    })),
     courseCompletion,
     generatedAt: new Date().toISOString(),
   };
@@ -252,19 +323,31 @@ function csvEscape(v) {
 }
 
 function usersToCsv(rows) {
+  // Existing columns are preserved; per-course columns are appended dynamically.
+  const courseCols = new Map();
+  for (const c of contentDB.getCourses()) {
+    courseCols.set(`${c.id} modules completed`, (r) => (r.courses?.[c.id]?.completed ?? 0));
+    courseCols.set(`${c.id} modules total`, (r) => (r.courses?.[c.id]?.totalModules ?? c.totalModules));
+  }
   const header = [
     "maskedId", "fullName", "email", "province", "country", "community",
     "gender", "age", "language", "jobRole", "status", "optedIn",
     "modulesCompleted", "progressPct", "certificates", "feedback", "feedbackAt", "createdAt", "lastActive",
+    ...courseCols.keys(),
   ];
   const lines = [header.join(",")];
   for (const r of rows) {
     lines.push(
       header
         .map((k) => {
-          let v = r[k];
-          if ((k === "createdAt" || k === "lastActive") && typeof v === "number") {
-            v = new Date(v).toISOString();
+          let v;
+          if (courseCols.has(k)) {
+            v = courseCols.get(k)(r);
+          } else {
+            v = r[k];
+            if ((k === "createdAt" || k === "lastActive") && typeof v === "number") {
+              v = new Date(v).toISOString();
+            }
           }
           return csvEscape(v);
         })

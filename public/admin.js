@@ -72,9 +72,14 @@ const qs = (o) => new URLSearchParams(Object.entries(o).filter(([, v]) => v !== 
 
 async function loadStats() {
   const s = await api("/api/admin/stats");
+  const courseCards = (s.courses && s.courses.length)
+    ? s.courses.map((c) => [c.completedAll, `${c.shortTitle} completed`])
+    : [[s.completedAll, "AI Tools completed"]];
   $("statCards").innerHTML = [
     [s.total, "Total users"], [s.registered, "Registered"], [s.partial, "Partial"],
-    [s.completedAll, "Completed all"], [s.certsIssued, "Certificates"], [s.optedIn, "Opted in"],
+    ...courseCards,
+    [s.completedBoth ?? 0, "Completed both courses"],
+    [s.certsIssued, "Certificates"], [s.optedIn, "Opted in"],
   ].map(([n, l]) => `<div class="card"><div class="n">${n}</div><div class="l">${l}</div></div>`).join("");
   const bd = (title, arr) => (arr || []).length ? `<div style="margin-bottom:10px"><b style="font-size:13px">${esc(title)}</b><div class="breakdown">${arr.map((x) => `<span>${esc(x.name)} · ${x.count}</span>`).join("")}</div></div>` : "";
   const pillsEl = $("breakdownPills");
@@ -117,6 +122,19 @@ function drawBreakdownCharts(s) {
   drawPie("chCommunity", s.byCommunity);
 }
 
+// Compact per-course indicator for the users table.
+function courseProgressHtml(u) {
+  const courses = u.courses && Object.keys(u.courses).length ? Object.values(u.courses) : null;
+  if (!courses) {
+    return `<div class="course-prog"><div class="cp-head"><b>AI Tools</b><span>${u.modulesCompleted}/${u.totalModules}</span></div><div class="bar"><i style="width:${u.progressPct}%"></i></div></div>`;
+  }
+  return courses.map((c) => `
+    <div class="course-prog" title="${esc(c.title)}">
+      <div class="cp-head"><b>${esc(c.shortTitle)}</b><span>${c.completed}/${c.totalModules}</span></div>
+      <div class="bar"><i style="width:${c.progressPct}%"></i></div>
+    </div>`).join("");
+}
+
 async function loadUsers() {
   const data = await api("/api/admin/users?" + qs(filters()));
   state.total = data.total;
@@ -132,7 +150,7 @@ async function loadUsers() {
       <td>${esc(u.province || "—")}<br><span style="color:#667781;font-size:12px">${esc(u.community || "")}</span></td>
       <td>${esc(u.country || "—")}</td>
       <td><span class="pill ${u.status === "registered" ? "reg" : "part"}">${esc(u.status)}</span></td>
-      <td>${u.modulesCompleted}/${u.totalModules}<div class="bar"><i style="width:${u.progressPct}%"></i></div></td>
+      <td>${courseProgressHtml(u)}</td>
       <td style="max-width:220px" title="${esc(u.feedback || "")}">${esc(fbPreview(u.feedback))}</td>
       <td style="white-space:nowrap">${fmtDate(u.lastActive)}</td>
       <td><button class="btn btn-ghost" onclick="openDetail('${encodeURIComponent(u.id)}')">View</button></td>
@@ -146,10 +164,30 @@ async function loadUsers() {
 
 async function loadAll() { await Promise.all([loadStats(), loadUsers()]); }
 
+// Per-course module detail for the drawer.
+function courseDetailHtml(u) {
+  const courses = u.courses && Object.keys(u.courses).length ? Object.values(u.courses) : null;
+  if (!courses) {
+    const mods = Object.entries(u.modules || {}).map(([mid, m]) =>
+      `<div>• <b>${esc(mid)}</b> — slides: ${(m.slides || []).length}, completed: ${m.completed ? "✅" : "⬜"}${m.quizScore != null ? `, quiz: ${m.quizScore}` : ""}</div>`).join("") || "<div>—</div>";
+    return `<b style="font-size:13px">MODULES (${u.modulesCompleted}/${u.totalModules})</b><div style="font-size:13px;margin:6px 0 12px">${mods}</div>`;
+  }
+  return `<b style="font-size:13px">COURSE PROGRESS</b>` + courses.map((c) => {
+    const mods = Object.entries(c.modules || {}).map(([mid, m]) => {
+      const bits = [`slides: ${(m.slides || []).length}`, m.completed ? "✅ completed" : "⬜ not completed"];
+      if (m.quizScore != null) bits.push(`quiz: ${m.quizScore}`);
+      return `<div class="course-mod">• <b>${esc(m.title || mid)}</b> <span>${bits.join(" · ")}</span></div>`;
+    }).join("") || `<div class="course-mod muted">No progress yet.</div>`;
+    return `<div class="course-detail">
+      <div class="course-detail-head"><b>${esc(c.shortTitle)}</b><span>${c.completed}/${c.totalModules} modules</span></div>
+      <div class="bar"><i style="width:${c.progressPct}%"></i></div>
+      <div class="course-mods">${mods}</div>
+    </div>`;
+  }).join("");
+}
+
 async function openDetail(encId) {
   const u = await api("/api/admin/users/" + encId);
-  const mods = Object.entries(u.modules || {}).map(([mid, m]) =>
-    `<div>• <b>${esc(mid)}</b> — slides: ${(m.slides || []).length}, completed: ${m.completed ? "✅" : "⬜"}${m.quizScore != null ? `, quiz: ${m.quizScore}` : ""}</div>`).join("") || "<div>—</div>";
   const certs = (u.certificateRequests || []).map((c) => `<div>• ${esc(c.name)} (${esc(c.certId || "")}) — ${esc(c.date || "")}</div>`).join("") || "<div>—</div>";
   $("modalBody").innerHTML = `
     <h3>${esc(u.fullName || "(no name)")}</h3>
@@ -165,7 +203,7 @@ async function openDetail(encId) {
       <b>Registered</b><span>${fmtDate(u.createdAt)}</span>
       <b>Feedback</b><span>${esc(u.feedback || "—")}${u.feedbackAt ? ` <span style="color:#667781;font-size:12px">(${esc(new Date(u.feedbackAt).toLocaleString())})</span>` : ""}</span>
     </div>
-    <b style="font-size:13px">MODULES (${u.modulesCompleted}/${u.totalModules})</b><div style="font-size:13px;margin:6px 0 12px">${mods}</div>
+    ${courseDetailHtml(u)}
     <b style="font-size:13px">CERTIFICATES (${u.certificates})</b><div style="font-size:13px;margin:6px 0 12px">${certs}</div>
     <button class="btn btn-ghost" onclick="closeModal()" style="width:100%">Close</button>`;
   $("modalBg").classList.add("show");

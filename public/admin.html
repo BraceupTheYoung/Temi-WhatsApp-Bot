@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Témí — Admin Dashboard</title>
+  <link rel="icon" href="data:,">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
@@ -38,6 +39,20 @@
     .pill.part { background: #fff8e1; color: #8a6d00; }
     .bar { height: 6px; background: #e8ecef; border-radius: 4px; overflow: hidden; min-width: 70px; margin-top: 4px; }
     .bar i { display: block; height: 100%; background: #25d366; }
+    .course-prog { min-width: 132px; margin-bottom: 7px; }
+    .course-prog:last-child { margin-bottom: 0; }
+    .cp-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 11.5px; line-height: 1.35; }
+    .cp-head b { font-weight: 600; color: #3b4a54; }
+    .cp-head span { color: #667781; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .course-prog .bar { min-width: 0; margin-top: 3px; }
+    .course-detail { border: 1px solid #eef1f3; border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
+    .course-detail-head { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
+    .course-detail-head span { color: #667781; font-size: 12px; }
+    .course-detail .bar { margin: 5px 0 8px; }
+    .course-mods { font-size: 12.5px; }
+    .course-mod { margin: 4px 0; line-height: 1.45; }
+    .course-mod span { color: #667781; }
+    .muted { color: #667781; }
     .pager { display: flex; align-items: center; gap: 10px; margin-top: 12px; font-size: 13px; color: #667781; }
     .login-wrap { max-width: 380px; margin: 8vh auto; background: #fff; border-radius: 16px; padding: 32px 28px; box-shadow: 0 1px 4px rgba(0,0,0,.1); text-align: center; }
     .login-wrap h2 { color: #075e54; margin: 10px 0 4px; }
@@ -98,7 +113,7 @@
         <table>
           <thead><tr>
             <th data-sort="fullName">Name ⇅</th><th>Contact</th><th>State</th><th data-sort="country">Country ⇅</th>
-            <th data-sort="status">Status ⇅</th><th data-sort="modulesCompleted">Progress ⇅</th>
+            <th data-sort="status">Status ⇅</th><th>Course progress</th>
             <th>Feedback</th>
             <th data-sort="lastActive">Last active ⇅</th><th></th>
           </tr></thead>

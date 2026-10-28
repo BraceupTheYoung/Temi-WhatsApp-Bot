@@ -61,6 +61,7 @@ const contentDB = {
   topics: {
     "ai-tools": {
       title: "AI Tools for Teachers",
+      shortTitle: "AI Tools",
       intro: "Welcome to the AI Tools for Teachers course! You'll learn about 3 powerful AI tools:\n\n1. ChatGPT - The world's most popular AI assistant\n2. Magic School AI - Built specifically for teachers\n3. Edu Aide - Your personal teaching assistant\n\nEach module has step-by-step lessons with text and a quiz. Let's get started!",
       modules: [
         chatgptModule,
@@ -70,6 +71,7 @@ const contentDB = {
     },
     "lesson-planning": {
       title: "Using AI to Write Lesson Plans & Notes",
+      shortTitle: "Lesson Planning",
       intro: "Welcome to the Using AI to Write Lesson Plans & Notes course! You'll learn how to use AI to write complete lesson notes, schemes of work, and differentiate for your class — all in minutes instead of hours.\n\nEach module has step-by-step lessons with text and a quiz. Let's get started!",
       modules: [
         lessonplanningModule1,
@@ -109,6 +111,17 @@ const getMainMenu = () => {
 };
 const getMenuHelp = () => contentDB.menuHelp;
 const getTopic = (topicId) => contentDB.topics[topicId];
+// Courses are the topics that define modules. Non-course topics (if any are
+// added later) are skipped so consumers like the admin dashboard list courses only.
+const getCourses = () =>
+  Object.entries(contentDB.topics)
+    .filter(([, topic]) => topic && Array.isArray(topic.modules) && topic.modules.length > 0)
+    .map(([id, topic]) => ({
+      id,
+      title: topic.title || id,
+      shortTitle: topic.shortTitle || topic.title || id,
+      totalModules: topic.modules.length
+    }));
 const getCompletion = () => contentDB.completion;
 
 const getQuickResponse = (input) => {
@@ -132,6 +145,7 @@ module.exports = {
   getMainMenu,
   getMenuHelp,
   getTopic,
+  getCourses,
   getCompletion,
   getQuickResponse
 };
