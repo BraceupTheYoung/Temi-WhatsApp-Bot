@@ -2046,7 +2046,8 @@ const handleFeedback = async (message) => {
   const completion = getCompletion();
 
   // Honor commands instead of capturing them as feedback (skip-and-continue).
-  if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
+  if (userInput === "menu" || userInput === "2" || userInput === "back" ||
+      userInput === "go back" || userInput === "main menu") {
     state.stage = STAGES.MAIN_MENU;
     await sendMainMenu(message);
     return;
