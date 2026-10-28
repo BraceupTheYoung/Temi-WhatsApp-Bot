@@ -1882,46 +1882,6 @@ const handleCompleted = async (message) => {
     }
   };
 
-const handleFeedback = async (message) => {
-  const userId = message.from;
-  const rawInput = (message.body || "").trim();
-  const userInput = rawInput.toLowerCase();
-  const state = getUserState(userId);
-  const mainMenu = getMainMenu();
-  const completion = getCompletion();
-
-  // Honor commands instead of capturing them as feedback (skip-and-continue).
-  if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
-    state.stage = STAGES.MAIN_MENU;
-    await sendMainMenu(message);
-    return;
-  }
-  if (userInput === "share") {
-    state.stage = STAGES.COMPLETED;
-    await pacedReply(message, completion.share);
-    return;
-  }
-  if (userInput === "skip" || userInput === "no" || userInput === "n") {
-    state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, `No problem — thank you for completing the course! 🙏`);
-    await sendMainMenu(message);
-    return;
-  }
-  if (userInput.length === 0) {
-    await pacedReply(message, `Please type your feedback, or type *SKIP* to skip.\nYou can also use this form if you prefer:\n${FEEDBACK_FORM_URL}`);
-    return;
-  }
-  // Capture the reply as feedback (truncate to protect JSON/CSV).
-  if (!usersDB[userId]) {
-    usersDB[userId] = { createdAt: Date.now(), progress: {} };
-  }
-  usersDB[userId].feedback = { text: rawInput.slice(0, 1000), at: new Date().toISOString() };
-  saveData();
-  state.stage = STAGES.MAIN_MENU;
-  await pacedReply(message, `Thank you so much for your feedback! 🙏 It helps us make *Témí* better for teachers like you. 💛`);
-  await sendMainMenu(message);
-};
-
   // SINGLE certificate flow: user typed DONE after Module 3 and is now
   // confirming the name. Confirm with YES or reply with correct FULL NAME.
   // No email is ever asked — cert auto-generates and delivers in chat.
@@ -2073,6 +2033,48 @@ const handleFeedback = async (message) => {
   
   // Default - show available options
   await pacedReply(message, "Reply *NEXT TOOL* to continue to the next tool ➡️\nReply *DONE* to see your certificate 🎓\nReply *SHARE* to share with colleagues 📲\nReply *MENU* to go back to the main menu 🏠");
+};
+
+// Feedback capture lives at module scope so the AWAITING_FEEDBACK dispatcher
+// can reach it (it used to be declared inside handleCompleted).
+const handleFeedback = async (message) => {
+  const userId = message.from;
+  const rawInput = (message.body || "").trim();
+  const userInput = rawInput.toLowerCase();
+  const state = getUserState(userId);
+  const mainMenu = getMainMenu();
+  const completion = getCompletion();
+
+  // Honor commands instead of capturing them as feedback (skip-and-continue).
+  if (userInput === "menu" || userInput === "2" || userInput.includes("back")) {
+    state.stage = STAGES.MAIN_MENU;
+    await sendMainMenu(message);
+    return;
+  }
+  if (userInput === "share") {
+    state.stage = STAGES.COMPLETED;
+    await pacedReply(message, completion.share);
+    return;
+  }
+  if (userInput === "skip" || userInput === "no" || userInput === "n") {
+    state.stage = STAGES.MAIN_MENU;
+    await pacedReply(message, `No problem — thank you for completing the course! 🙏`);
+    await sendMainMenu(message);
+    return;
+  }
+  if (userInput.length === 0) {
+    await pacedReply(message, `Please type your feedback, or type *SKIP* to skip.\nYou can also use this form if you prefer:\n${FEEDBACK_FORM_URL}`);
+    return;
+  }
+  // Capture the reply as feedback (truncate to protect JSON/CSV).
+  if (!usersDB[userId]) {
+    usersDB[userId] = { createdAt: Date.now(), progress: {} };
+  }
+  usersDB[userId].feedback = { text: rawInput.slice(0, 1000), at: new Date().toISOString() };
+  saveData();
+  state.stage = STAGES.MAIN_MENU;
+  await pacedReply(message, `Thank you so much for your feedback! 🙏 It helps us make *Témí* better for teachers like you. 💛`);
+  await sendMainMenu(message);
 };
 
 // Dedupe: Meta may retry webhook deliveries — one user tap must never run
