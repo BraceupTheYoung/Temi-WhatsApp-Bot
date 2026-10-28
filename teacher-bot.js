@@ -1325,8 +1325,12 @@ const handleMainMenu = async (message) => {
     let introText = topic.intro || "Welcome to this topic!";
     introText = introText.replace("{name}", getDisplayName(userId));
     
-    const introMediaPath = path.join(MEDIA_DIR, "tools list  intro.jpeg");
-    if (fs.existsSync(introMediaPath)) {
+    // Topic intro artwork is AI Tools-only. Lesson Planning (and any future
+    // course) gets a plain-text intro until its own artwork is added.
+    const introMediaPath = topicId === "ai-tools"
+      ? path.join(MEDIA_DIR, "tools list  intro.jpeg")
+      : null;
+    if (introMediaPath && fs.existsSync(introMediaPath)) {
       await sendImageFile(message, introMediaPath, introText + "\n\nReply with *1* to start or *2* to go back.");
     } else {
       await pacedReply(message, introText + "\n\nReply with *1* to start or *2* to go back.");
