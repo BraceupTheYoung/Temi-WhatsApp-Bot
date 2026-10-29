@@ -20,6 +20,12 @@ fs.writeFileSync(path.join(sandbox, "users_db.json"), JSON.stringify({
     createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Menu Tester",
     language: "English", jobRole: "Teacher",
   },
+  "555000000040": {
+    createdAt: Date.now(), progress: {}, agreedToTerms: true, fullName: "Legacy Township",
+    email: "legacy@gmail.com", province: "Lagos", country: "Nigeria",
+    community: "Township", gender: "Female", age: "25-34",
+    language: "English", jobRole: "Teacher",
+  },
 }, null, 2));
 
 process.env.META_PHONE_ID = "1234567890";
@@ -197,6 +203,17 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
     st.welcomeStep = "await_terms";
     st.regField = null;
   };
+  const reachCommunity = async (id) => {
+    goTerms(id);
+    await say(id, "1");
+    await say(id, "Community Tester");
+    await say(id, "community@gmail.com");
+    assert.strictEqual(bot.getUserState(id).regField, "province");
+    await say(id, "Lagos");
+    assert.strictEqual(bot.getUserState(id).regField, "country");
+    await say(id, "Nigeria");
+    assert.strictEqual(bot.getUserState(id).regField, "community");
+  };
 
   // 9) Email validation (unit): shape + allowlist.
   for (const e of ["name@gmail.com", "name@yahoo.com", " NAME@GMAIL.COM ", "a.b+tag@gmail.com"]) {
@@ -253,7 +270,7 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   await say(mailA, "  NAME@GMAIL.COM  ");
   assert.strictEqual(bot.getUserState(mailA).regField, "province");
   assert.strictEqual(readUsers()[mailA].email, "name@gmail.com");
-  assert.match(lastBodyTo(mailA) || "", /Please enter your state/);
+  assert.match(lastBodyTo(mailA) || "", /Please enter your state of residence/);
 
   const mailB = "555000000002";
   goEmail(mailB);
@@ -300,6 +317,45 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   await say(flow, "flow@gmail.com");
   assert.strictEqual(bot.getUserState(flow).regField, "province");
   assert.strictEqual(readUsers()[flow].email, "flow@gmail.com");
+
+  // 13b) Community options: "Semi urban" is option 3; typed variants and the
+  //      legacy word "Township" all store the new label.
+  for (const [id, input] of [
+    ["555000000021", "semi urban"],
+    ["555000000022", "semi-urban"],
+    ["555000000023", "SEMIURBAN"],
+    ["555000000024", "Township"],
+    ["555000000025", "3"],
+  ]) {
+    await reachCommunity(id);
+    assert.match(lastBodyTo(id) || "", /1\. Rural\n2\. Urban\n3\. Semi urban/);
+    await say(id, input);
+    assert.strictEqual(bot.getUserState(id).regField, "gender", `${input} should advance`);
+    assert.strictEqual(readUsers()[id].community, "Semi urban", `${input} should store Semi urban`);
+  }
+
+  // 13c) Legacy "Township" records are shown and counted as "Semi urban"
+  //      without editing users_db.json.
+  const storeDir = path.join(sandbox, "storecheck");
+  fs.mkdirSync(storeDir);
+  for (const f of ["store.js", "content-db.js"]) {
+    fs.copyFileSync(path.join(__dirname, f), path.join(storeDir, f));
+  }
+  fs.cpSync(path.join(__dirname, "content"), path.join(storeDir, "content"), { recursive: true });
+  fs.copyFileSync(path.join(sandbox, "users_db.json"), path.join(storeDir, "users_db.json"));
+  fs.writeFileSync(path.join(storeDir, "opted_in_users.json"), "[]");
+  const store = require(path.join(storeDir, "store.js"));
+  const legacyRow = store.getAllRows().find((r) => r.id === "555000000040");
+  assert.ok(legacyRow, "legacy Township record loads");
+  assert.strictEqual(legacyRow.community, "Semi urban", "legacy display maps to Semi urban");
+  const communityStats = store.getStats().byCommunity;
+  const semiStat = communityStats.find((c) => c.name === "Semi urban");
+  assert.ok(semiStat && semiStat.count >= 1, "legacy Township counted as Semi urban");
+  assert.ok(!communityStats.some((c) => c.name === "Township"), "no separate Township bucket");
+  const [csvHeader, csvRow] = store.usersToCsv([legacyRow]).split("\n");
+  const communityCol = csvHeader.split(",").indexOf("community");
+  assert.strictEqual(csvRow.split(",")[communityCol], "Semi urban", "CSV community maps to Semi urban");
+  assert.strictEqual(readUsers()["555000000040"].community, "Township", "stored data untouched");
 
   // ---------------------------------------------------------------------
   // Interactive messages (Group A): helpers, terms buttons, id guard

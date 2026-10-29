@@ -52,6 +52,16 @@ function normalizeLabel(v) {
   return s ? toTitleCase(s) : "";
 }
 
+// Legacy community records may still say "Township". Show and count them as
+// "Semi urban" so the dashboard and CSV keep a single category.
+function normalizeCommunity(v) {
+  const s = String(v ?? "").trim().replace(/\s+/g, " ");
+  if (!s) return "";
+  if (s.toLowerCase() === "township") return "Semi urban";
+  const titled = toTitleCase(s);
+  return titled === "Semi Urban" ? "Semi urban" : titled;
+}
+
 function summarizeProgress(user, topicId = "ai-tools") {
   const topic = contentDB.getTopic(topicId);
   const modules = (user.progress && user.progress[topicId] && user.progress[topicId].modules) || {};
@@ -103,7 +113,7 @@ function toRow(id, u, topicId = "ai-tools") {
     email: u.email || "",
     province: u.province || "",
     country: u.country || "",
-    community: u.community || "",
+    community: normalizeCommunity(u.community),
     gender: u.gender || "",
     age: u.age || "",
     language: u.language || "",
@@ -266,7 +276,7 @@ function getStats() {
     const co = normalizeLabel(r.country);
     const ge = normalizeLabel(r.gender);
     const ag = normalizeLabel(r.age);
-    const cm = normalizeLabel(r.community);
+    const cm = normalizeCommunity(r.community);
     if (st) byProvince[st] = (byProvince[st] || 0) + 1;
     if (co) byCountry[co] = (byCountry[co] || 0) + 1;
     if (ge) byGender[ge] = (byGender[ge] || 0) + 1;

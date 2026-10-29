@@ -28,14 +28,14 @@ const contentDB = {
       prompt: "Please enter your email address."
     },
     province: {
-      prompt: "Please enter your state"
+      prompt: "Please enter your state of residence"
     },
     country: {
       prompt: "Please enter your country"
     },
     community: {
       prompt: "Which of these best describes your community?",
-      buttons: ["Rural", "Urban", "Township"]
+      buttons: ["Rural", "Urban", "Semi urban"]
     },
     gender: {
       prompt: "What gender do you identify as?",

@@ -1057,7 +1057,7 @@ const handleRegistration = async (message) => {
         state.regField = "country";
         await pacedReply(message, formatOptions(reg.country));
       } else {
-        await pacedReply(message, "Please enter your state.");
+        await pacedReply(message, "Please enter your state of residence.");
       }
       break;
 
@@ -1087,16 +1087,29 @@ const handleRegistration = async (message) => {
       }
       break;
       
-    case "community":
+    case "community": {
+      // Typed words are accepted alongside the numbers; "Township" stays valid
+      // for users mid-flow and is stored as the new label.
+      const communityInput = msg.trim().toLowerCase().replace(/[\s-]+/g, " ");
+      const communityAliases = {
+        "semi urban": "Semi urban",
+        semiurban: "Semi urban",
+        township: "Semi urban",
+      };
       const communityIdx = parseInt(msg) - 1;
-      if (communityIdx >= 0 && communityIdx < reg.community.buttons.length) {
-        usersDB[userId].community = reg.community.buttons[communityIdx];
+      const communityValue =
+        communityIdx >= 0 && communityIdx < reg.community.buttons.length
+          ? reg.community.buttons[communityIdx]
+          : communityAliases[communityInput];
+      if (communityValue) {
+        usersDB[userId].community = communityValue;
         state.regField = "gender";
         await pacedReply(message, formatOptions(reg.gender));
       } else {
         await pacedReply(message, "Please enter a valid number from the list.");
       }
       break;
+    }
       
     case "gender":
       const genderIdx = parseInt(msg) - 1;
