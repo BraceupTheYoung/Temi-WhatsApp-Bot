@@ -1165,20 +1165,53 @@ const formatOptions = (field) => {
   return text;
 };
 
-// Terms agreement: reply buttons with a plain-text fallback. Typed 1/2 and
-// yes/no still work through AGREE_REPLIES / DECLINE_REPLIES in handleWelcome.
+// Terms agreement: tappable Terms link first, then the reply buttons. Typed
+// 1/2 and yes/no still work through AGREE_REPLIES / DECLINE_REPLIES.
 const TERMS_BUTTONS = [
   { id: "terms_agree", title: "Yes, I agree" },
   { id: "terms_decline", title: "No, I do not agree" },
 ];
 const sendTermsPrompt = async (message, prefix = "") => {
   const reg = getRegistration();
-  const body = `${prefix}${reg.terms.prompt}`;
+  const paragraphs = reg.terms.prompt.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean);
+  const termsQuestion = paragraphs[paragraphs.length - 1] ||
+    "Do you agree to our Terms and Conditions and Privacy Policy?";
+  const termsIntro = paragraphs
+    .filter((p) => p !== termsQuestion && !/^📄 Read our full Terms/i.test(p))
+    .join("\n\n");
+  const termsUrl = (reg.terms.prompt.match(/https?:\/\/\S+/) || [])[0];
+
   try {
-    return await sendButtonsTo(message.from, { body, buttons: TERMS_BUTTONS });
+    await sendCtaUrlTo(message.from, {
+      body: `${prefix}${termsIntro}`,
+      displayText: "Read Terms",
+      url: termsUrl,
+    });
+  } catch (e) {
+    console.error("Terms CTA failed, falling back to text:", e?.message || e);
+    return await pacedReply(message, `${prefix}${formatOptions(reg.terms)}`);
+  }
+
+  try {
+    return await sendButtonsTo(message.from, { body: termsQuestion, buttons: TERMS_BUTTONS });
   } catch (e) {
     console.error("Terms buttons failed, falling back to text:", e?.message || e);
-    return await pacedReply(message, `${prefix}${formatOptions(reg.terms)}`);
+    return await pacedReply(message, formatOptions(reg.terms));
+  }
+};
+
+// Feedback prompt after a certificate: tappable form link, with the original
+// text message (including the raw URL) as the fallback.
+const sendFeedbackPrompt = async (message) => {
+  try {
+    await sendCtaUrlTo(message.from, {
+      body: "💬 *One last thing — how was your experience?*\n\nType your feedback here, or use the form.\n\nOr type *SKIP* to skip.",
+      displayText: "Give Feedback",
+      url: FEEDBACK_FORM_URL,
+    });
+  } catch (e) {
+    console.error("Feedback CTA failed, falling back to text:", e?.message || e);
+    await pacedReply(message, `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`);
   }
 };
 
@@ -1876,13 +1909,13 @@ const handleCompleted = async (message) => {
       state.awaitingCertConfirm = false;
       state.stage = STAGES.AWAITING_FEEDBACK;
       await pacedReply(message, `Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲`);
-      await pacedReply(message, `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`);
+      await sendFeedbackPrompt(message);
     } catch (e) {
       console.error("Certificate generation failed:", e);
       state.awaitingCertConfirm = false;
       state.stage = STAGES.AWAITING_FEEDBACK;
       await pacedReply(message, `✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
-      await pacedReply(message, `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`);
+      await sendFeedbackPrompt(message);
     }
   };
 
@@ -2591,6 +2624,7 @@ module.exports = {
   sendListTo,
   sendButtonsTo,
   sendCtaUrlTo,
+  sendFeedbackPrompt,
   sendMenuTo,
   sendMainMenu,
   sendSlide,

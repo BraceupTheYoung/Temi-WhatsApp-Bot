@@ -179,6 +179,9 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
     const sends = graphCalls.filter((c) => c.body && c.body.to === id && c.body.type === "interactive");
     return sends.length ? sends[sends.length - 1].body : null;
   };
+  const interactiveSendsTo = (id) =>
+    graphCalls.filter((c) => c.body && c.body.to === id && c.body.type === "interactive")
+      .map((c) => c.body);
   let saySeq = 0;
   const say = (id, body, rawType = "text") =>
     bot.handleIncomingMessage({ from: id, body, rawType, id: `wamid.test-${id}-${++saySeq}` });
@@ -258,14 +261,30 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   assert.strictEqual(bot.getUserState(mailB).regField, "province");
   assert.strictEqual(readUsers()[mailB].email, "teacher@yahoo.com");
 
-  // 13) Full path: hello temi -> terms -> 1 -> name -> invalid email -> valid.
+  // 13) Full path: hello temi -> terms CTA + buttons -> 1 -> name -> email.
   const flow = "555000000020";
   await say(flow, "hello temi");
   assert.strictEqual(bot.getUserState(flow).welcomeStep, "await_ack");
   await say(flow, "ok");
   assert.strictEqual(bot.getUserState(flow).welcomeStep, "await_terms");
   assert.match(lastBodyTo(flow) || "", /Do you agree to our Terms and Conditions and Privacy Policy\?/);
-  const flowTerms = lastInteractiveTo(flow);
+  const termsUrl = (require(path.join(__dirname, "content-db.js"))
+    .getRegistration().terms.prompt.match(/https?:\/\/\S+/) || [])[0];
+  assert.ok(termsUrl, "terms URL exists in content");
+  const flowTermsSends = interactiveSendsTo(flow);
+  assert.strictEqual(flowTermsSends.length, 2, "terms step sends CTA then buttons");
+  const flowCta = flowTermsSends[0];
+  assert.strictEqual(flowCta.interactive.type, "cta_url");
+  assert.match(flowCta.interactive.body.text, /Before we go any further/);
+  assert.ok(!/https?:\/\//.test(flowCta.interactive.body.text), "CTA body must not contain a raw URL");
+  assert.deepStrictEqual(flowCta.interactive.action, {
+    name: "cta_url",
+    parameters: { display_text: "Read Terms", url: termsUrl },
+  });
+  const flowTerms = flowTermsSends[1];
+  assert.strictEqual(flowTerms.interactive.type, "button");
+  assert.strictEqual(flowTerms.interactive.body.text,
+    "Do you agree to our Terms and Conditions and Privacy Policy?");
   assert.deepStrictEqual(
     flowTerms?.interactive?.action?.buttons?.map((b) => b.reply.title),
     ["Yes, I agree", "No, I do not agree"]
@@ -382,16 +401,48 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   assert.match(lastBodyTo(declineTap) || "", /No problem\. You need to agree to the Terms and Conditions/);
   assert.ok(!(declineTap in readUsers()), "decline tap must not create a profile");
 
-  // Graph failure on the buttons send falls back to the numbered text prompt.
+  // Graph failure on the terms CTA falls back to the single numbered text
+  // prompt (URL + options), and no buttons message is sent.
   const termsFallback = "555000000015";
   const termsState = bot.getUserState(termsFallback);
   termsState.stage = bot.STAGES.WELCOME;
   termsState.welcomeStep = "await_ack";
   termsState.regField = null;
+  const fallbackStart = graphCalls.length;
   failNextInteractive = true;
   await say(termsFallback, "ok");
   assert.strictEqual(bot.getUserState(termsFallback).welcomeStep, "await_terms");
+  const fallbackSends = graphCalls.slice(fallbackStart)
+    .filter((c) => c.body && c.body.to === termsFallback);
+  assert.strictEqual(fallbackSends.length, 2, "CTA attempt + text fallback only");
+  assert.strictEqual(fallbackSends[0].body.interactive.type, "cta_url");
+  assert.strictEqual(fallbackSends[1].body.type, "text");
+  assert.match(lastBodyTo(termsFallback) || "", /https?:\/\//);
   assert.match(lastBodyTo(termsFallback) || "", /1\. Yes, I agree\n2\. No, I do not agree/);
+
+  // 15b) Feedback CTA payload and its text fallback.
+  const feedbackUrl = "https://docs.google.com/forms/d/e/1FAIpQLSdHsEaQ5hfFb0xscOIRSOS60hkn1tjnz7KCCnfFDlJo6LYMEg/viewform?usp=send_form";
+  const feedbackTo = "555000000016";
+  await bot.sendFeedbackPrompt({ from: feedbackTo });
+  const feedbackCta = lastInteractiveTo(feedbackTo);
+  assert.strictEqual(feedbackCta.interactive.type, "cta_url");
+  assert.strictEqual(feedbackCta.interactive.action.parameters.display_text, "Give Feedback");
+  assert.ok(feedbackCta.interactive.action.parameters.display_text.length <= 20);
+  assert.strictEqual(feedbackCta.interactive.action.parameters.url, feedbackUrl);
+  assert.match(feedbackCta.interactive.body.text, /how was your experience\?/);
+  assert.match(feedbackCta.interactive.body.text, /Or type \*SKIP\* to skip\.$/);
+  assert.ok(feedbackCta.interactive.body.text.length <= bot.LIMITS.BODY);
+
+  const feedbackFallbackTo = "555000000017";
+  failNextInteractive = true;
+  await bot.sendFeedbackPrompt({ from: feedbackFallbackTo });
+  const feedbackFallbackSends = graphCalls
+    .filter((c) => c.body && c.body.to === feedbackFallbackTo);
+  assert.strictEqual(feedbackFallbackSends.length, 2, "failed CTA attempt + text fallback");
+  assert.strictEqual(feedbackFallbackSends[0].body.interactive.type, "cta_url");
+  assert.strictEqual(feedbackFallbackSends[1].body.type, "text", "no CTA delivered on failure");
+  assert.match(lastBodyTo(feedbackFallbackTo) || "", /https:\/\/docs\.google\.com\/forms/);
+  assert.match(lastBodyTo(feedbackFallbackTo) || "", /SKIP/);
 
   // 16) Guard: unknown id, valid id at wrong stage, cold tap stays silent.
   const menuUser = "555000000030";
