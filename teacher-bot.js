@@ -59,26 +59,29 @@ if (!metaConfigured()) {
   console.warn("⚠️ META_PHONE_ID / META_ACCESS_TOKEN not set — outbound sends will fail until .env is configured.");
 }
 
-// ---- Human-like global message pacing (anti-burst) ----
-// Lighter variant: 2-4s for consecutive chunks inside one logical payload
-// (sendSlide elements), 3-8s for new interactions / topic intros / quiz
-// transitions / certificates. All outbound goes through a GLOBAL serial
-// queue layered on top of the existing per-user queue, so concurrent users
-// can't fire simultaneously and trip API rate limits.
+// ---- Global outbound pacing (anti-burst) ----
+// Tuned for the official Meta Cloud API (the old whatsapp-web.js simulation
+// needed multi-second pauses to look human). 0.5-1s for a new reply so Témí
+// feels near-instant; 1.2-1.5s between chunks of the same logical payload
+// (sendSlide elements) so bubbles arrive quickly in order but stay spaced
+// enough to avoid Meta error 131056 (too many messages to one recipient in a
+// short window). All outbound goes through a GLOBAL serial queue layered on
+// top of the per-user queue, so concurrent users can't fire simultaneously.
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
-const CHUNK_MIN_MS = 2000;
-const CHUNK_MAX_MS = 4000;
-const HUMAN_MIN_MS = 3000;
-const HUMAN_MAX_MS = 8000;
+const CHUNK_MIN_MS = 1200;
+const CHUNK_MAX_MS = 1500;
+const HUMAN_MIN_MS = 500;
+const HUMAN_MAX_MS = 1000;
 
 const randomChunkDelay = () =>
   Math.floor(CHUNK_MIN_MS + Math.random() * (CHUNK_MAX_MS - CHUNK_MIN_MS));
 const randomHumanDelay = () =>
   Math.floor(HUMAN_MIN_MS + Math.random() * (HUMAN_MAX_MS - HUMAN_MIN_MS));
 
-// Human-like pacing delays are kept for UX (readable, unhurried delivery).
-// Cloud API has no typing-indicator send, so this is a plain delay.
+// Pacing is a plain delay: the Cloud API has no typing-indicator send.
+// Small jitter avoids perfectly regular send intervals while keeping the
+// per-recipient gap above the rate-limit threshold.
 const humanPace = async (_message, ms) => {
   await delay(ms);
   return ms;
@@ -158,13 +161,15 @@ const graphSend = async (payload, label) => {
   return data;
 };
 
+const MAX_TEXT_CHARS = 4090; // WhatsApp hard limit is 4096 — keep a small margin.
 const sendTextTo = async (to, body) => {
-  // WhatsApp text limit is 4096 chars — chunk defensively.
+  // WhatsApp text limit is 4096 chars — chunk defensively, but as close to
+  // the ceiling as is safe so a ~4.1k-character lesson step stays 1 bubble.
   const chunks = [];
   let rest = String(body || "");
-  while (rest.length > 4000) {
-    chunks.push(rest.slice(0, 4000));
-    rest = rest.slice(4000);
+  while (rest.length > MAX_TEXT_CHARS) {
+    chunks.push(rest.slice(0, MAX_TEXT_CHARS));
+    rest = rest.slice(MAX_TEXT_CHARS);
   }
   chunks.push(rest);
   let out = null;
@@ -229,7 +234,7 @@ const markAsRead = async (messageId) => {
 };
 
 // Central text sender: global-queue + randomized delay + Graph send.
-// pace: "human" (3-8s, default) | "chunk" (2-4s, same-payload pieces).
+// pace: "human" (0.5-1s, default) | "chunk" (1.2-1.5s, same-payload pieces).
 // NOTE: uses bracket access to avoid matching the automated
 // message.reply( -> pacedReply(message, migration below.
 const pacedReply = async (message, content, pace = "human", _options) => {
@@ -409,7 +414,7 @@ const isInteractiveIdAllowed = (id, state) => {
 // MessageMedia-like ({ filename, mimetype, data }), an absolute file path,
 // or a bare filename relative to media/. Type is inferred from extension:
 // image -> image+caption, audio -> audio, pdf -> document+caption.
-// pace: "human" (3-8s, default) | "chunk" (2-4s, in-slide media).
+// pace: "human" (0.5-1s, default) | "chunk" (1.2-1.5s, in-slide media).
 const resolveMediaPath = (media) => {
   if (typeof media === "string") {
     if (path.isAbsolute(media) && fs.existsSync(media)) return media;
@@ -1142,9 +1147,10 @@ const handleRegistration = async (message) => {
         state.regField = null;
         saveData();
 
-        // Greeting first, then the interactive main menu.
-        await pacedReply(message, `You're all set, ${usersDB[userId].fullName}! 🎉`);
-        await sendMainMenu(message);
+        // Greeting folded into the interactive main-menu bubble (1 message).
+        await sendMainMenu(message, {
+          leadText: `You're all set, ${usersDB[userId].fullName}! 🎉`,
+        });
       } else {
         await pacedReply(message, "Please enter a valid number from the list.");
       }
@@ -1178,8 +1184,9 @@ const formatOptions = (field) => {
   return text;
 };
 
-// Terms agreement: tappable Terms link first, then the reply buttons. Typed
-// 1/2 and yes/no still work through AGREE_REPLIES / DECLINE_REPLIES.
+// Terms agreement: ONE reply-buttons bubble carrying the Terms URL in its
+// body (previously a CTA bubble + a buttons bubble = two billable messages).
+// Typed 1/2 and yes/no still work through AGREE_REPLIES / DECLINE_REPLIES.
 const TERMS_BUTTONS = [
   { id: "terms_agree", title: "Yes, I agree" },
   { id: "terms_decline", title: "No, I do not agree" },
@@ -1193,38 +1200,35 @@ const sendTermsPrompt = async (message, prefix = "") => {
     .filter((p) => p !== termsQuestion && !/^📄 Read our full Terms/i.test(p))
     .join("\n\n");
   const termsUrl = (reg.terms.prompt.match(/https?:\/\/\S+/) || [])[0];
+  const body = `${prefix}${termsIntro}\n\n📄 Read our full Terms & Conditions:\n${termsUrl}\n\n${termsQuestion}`;
 
   try {
-    await sendCtaUrlTo(message.from, {
-      body: `${prefix}${termsIntro}`,
-      displayText: "Read Terms",
-      url: termsUrl,
-    });
-  } catch (e) {
-    console.error("Terms CTA failed, falling back to text:", e?.message || e);
-    return await pacedReply(message, `${prefix}${formatOptions(reg.terms)}`);
-  }
-
-  try {
-    return await sendButtonsTo(message.from, { body: termsQuestion, buttons: TERMS_BUTTONS });
+    return await sendButtonsTo(message.from, { body, buttons: TERMS_BUTTONS });
   } catch (e) {
     console.error("Terms buttons failed, falling back to text:", e?.message || e);
-    return await pacedReply(message, formatOptions(reg.terms));
+    return await pacedReply(message, `${prefix}${formatOptions(reg.terms)}`);
   }
 };
 
 // Feedback prompt after a certificate: tappable form link, with the original
 // text message (including the raw URL) as the fallback.
-const sendFeedbackPrompt = async (message) => {
+// `leadText` folds the post-certificate MENU/SHARE hint (or the generation
+// failure notice) into the SAME bubble instead of sending it separately.
+const FEEDBACK_BODY = "💬 *One last thing — how was your experience?*\n\nType your feedback here, or use the form.\n\nOr type *SKIP* to skip.";
+const FEEDBACK_FALLBACK = `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`;
+const withLeadText = (leadText, body) =>
+  leadText ? `${leadText}\n\n${body}` : body;
+
+const sendFeedbackPrompt = async (message, { leadText = "" } = {}) => {
   try {
     await sendCtaUrlTo(message.from, {
-      body: "💬 *One last thing — how was your experience?*\n\nType your feedback here, or use the form.\n\nOr type *SKIP* to skip.",
+      body: withLeadText(leadText, FEEDBACK_BODY),
       displayText: "Give Feedback",
       url: FEEDBACK_FORM_URL,
     });
   } catch (e) {
     console.error("Feedback CTA failed, falling back to text:", e?.message || e);
-    await pacedReply(message, `💬 *One last thing — how was your experience?*\n\nPlease type your feedback right here in the chat, OR fill out this quick form if you prefer:\n${FEEDBACK_FORM_URL}\n\nJust reply with your thoughts (or type *SKIP* to skip).`);
+    await pacedReply(message, withLeadText(leadText, FEEDBACK_FALLBACK));
   }
 };
 
@@ -1257,17 +1261,26 @@ const sendMenuTo = async (to, { intro, options }) => {
   });
 };
 
-const sendMainMenu = async (message) => {
+// `leadText` merges a one-line acknowledgement into the menu bubble so we
+// don't spend a second billable message on "You're all set" / "Thank you".
+const sendMainMenu = async (message, { leadText = "" } = {}) => {
   const userId = message.from;
   const mainMenu = getMainMenu();
+  const merge = (body) => {
+    if (!leadText) return body;
+    // Interactive bodies are capped at 1024 chars (LIMITS.BODY).
+    const room = Math.max(0, LIMITS.BODY - body.length - leadText.length - 2);
+    if (room <= 0) return body;
+    return `${leadText}\n\n${body}`;
+  };
   try {
     return await sendMenuTo(userId, {
-      intro: mainMenu.intro || formatMenu(mainMenu, usersDB[userId]?.name),
+      intro: merge(mainMenu.intro || formatMenu(mainMenu, usersDB[userId]?.name)),
       options: mainMenu.options,
     });
   } catch (e) {
     console.error("Main menu interactive send failed, falling back to text:", e?.message || e);
-    return await pacedReply(message, formatMenu(mainMenu, usersDB[userId]?.name));
+    return await pacedReply(message, merge(formatMenu(mainMenu, usersDB[userId]?.name)));
   }
 };
 
@@ -1288,11 +1301,11 @@ const handleMainMenu = async (message) => {
     return;
   }
   
-  // Handle quick responses (TOOLS LIST, PROMPT TEMPLATES, etc.)
+  // Handle quick responses (TOOLS LIST, PROMPT TEMPLATES, etc.) — the answer
+  // is now the menu bubble's lead text instead of a second message.
   const quickResponse = getQuickResponse(msg);
   if (quickResponse) {
-    await pacedReply(message, quickResponse);
-    await sendMainMenu(message);
+    await sendMainMenu(message, { leadText: quickResponse });
     return;
   }
   
@@ -1512,8 +1525,7 @@ const handleTopicIntro = async (message) => {
   if (!topic) {
     console.log("ERROR: Topic is null for", state.currentTopic);
     state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, "Something went wrong. Returning to menu.");
-    await sendMainMenu(message);
+    await sendMainMenu(message, { leadText: "Something went wrong. Returning to menu." });
     return;
   }
   
@@ -1532,18 +1544,15 @@ const handleTopicIntro = async (message) => {
   } else {
     const quickResponse = getQuickResponse(userInput);
     if (quickResponse) {
-      await pacedReply(message, quickResponse);
-      await pacedReply(message, "\nReply with *1* to start or *2* to go back.");
+      await pacedReply(message, `${quickResponse}\n\nReply with *1* to start or *2* to go back.`);
       return;
     }
   }
   
   if (userInput === "1" || userInput.includes("let's go") || userInput.includes("start") || userInput.includes("go")) {
     if (!topic.modules || topic.modules.length === 0) {
-      await pacedReply(message, "No content available for this topic yet. Returning to menu.");
       state.stage = STAGES.MAIN_MENU;
-      const mainMenu = getMainMenu();
-      await sendMainMenu(message);
+      await sendMainMenu(message, { leadText: "No content available for this topic yet. Returning to menu." });
       return;
     }
     
@@ -1551,10 +1560,8 @@ const handleTopicIntro = async (message) => {
     console.log("First module:", firstModule.id, "Slides:", firstModule.slides?.length);
     
     if (!firstModule.slides || firstModule.slides.length === 0) {
-      await pacedReply(message, "No slides found for this module. Returning to menu.");
       state.stage = STAGES.MAIN_MENU;
-      const mainMenu = getMainMenu();
-      await sendMainMenu(message);
+      await sendMainMenu(message, { leadText: "No slides found for this module. Returning to menu." });
       return;
     }
     
@@ -1591,7 +1598,7 @@ const sendSlide = async (message, state, slide) => {
   const userId = message.from;
 
   // Returns false if a Graph send failed (caller stops the slide, no pile-on).
-  // Same-payload chunks use "chunk" pacing (2-4s) via the global queue.
+  // Same-payload chunks use "chunk" pacing (1.2-1.5s) via the global queue.
   const safeReply = async (content, options) => {
     try {
       const isMediaPath =
@@ -1677,6 +1684,36 @@ const sendSlide = async (message, state, slide) => {
   }
 };
 
+// Start (or restart) the quiz for a module. Centralised so typed QUIZ and
+// NEXT on the final quiz-invite slide behave identically (one first question
+// payload, no silent module completion without a quiz score).
+const startModuleQuiz = async (message, state, module) => {
+  const userId = message.from;
+  state.currentQuizQuestion = 0;
+  state.quizAnswers = [];
+  state.stage = STAGES.QUIZ;
+  if (usersDB[userId] && module) {
+    usersDB[userId].quizState = {
+      inQuiz: true,
+      topicId: state.currentTopic,
+      moduleId: module.id,
+      questionIndex: 0,
+    };
+    saveData();
+  }
+  const firstQ = module.questions[0];
+  await pacedReply(message, formatQuiz({
+    q: firstQ.q,
+    options: firstQ.options,
+    total: module.questions.length,
+  }, 1));
+};
+
+const slideInvitesQuiz = (slide) => {
+  const text = Array.isArray(slide?.text) ? slide.text.join("\n") : String(slide?.text || "");
+  return /quiz/i.test(text) && /reply/i.test(text);
+};
+
 const handleLearning = async (message) => {
   const userId = message.from;
   const userInput = (message.body || "").toLowerCase().trim();
@@ -1693,8 +1730,7 @@ const handleLearning = async (message) => {
   
   const quickResponse = getQuickResponse(userInput);
   if (quickResponse) {
-    await pacedReply(message, quickResponse);
-    await pacedReply(message, "\nWhat would you like to do next?\n\nReply *NEXT* to continue or *MENU* to go back to the menu.");
+    await pacedReply(message, `${quickResponse}\n\nWhat would you like to do next?\n\nReply *NEXT* to continue or *MENU* to go back to the menu.`);
     return;
   }
   
@@ -1706,21 +1742,7 @@ const handleLearning = async (message) => {
   }
   
   if (userInput === "quiz") {
-    state.currentQuizQuestion = 0;
-    state.quizAnswers = [];
-    state.stage = STAGES.QUIZ;
-    // FIX 3 — persist quiz position so a returning user resumes the
-    // exact question they left off.
-    if (usersDB[userId] && module) {
-      usersDB[userId].quizState = { inQuiz: true, topicId: state.currentTopic, moduleId: module.id, questionIndex: 0 };
-      saveData();
-    }
-    const firstQ = module.questions[0];
-    await pacedReply(message, formatQuiz({
-      q: firstQ.q,
-      options: firstQ.options,
-      total: module.questions.length
-    }, 1));
+    await startModuleQuiz(message, state, module);
     return;
   }
   
@@ -1730,6 +1752,10 @@ const handleLearning = async (message) => {
     if (state.currentSlide < module.slides.length) {
       await sendSlide(message, state, module.slides[state.currentSlide]);
       updateUserProgress(userId, state.currentTopic, module.id, state.currentSlide);
+    } else if (slideInvitesQuiz(module.slides[module.slides.length - 1])) {
+      // The final slide always invites the quiz. Treating NEXT here as
+      // completion used to leave quizScore empty and force a paid retake.
+      await startModuleQuiz(message, state, module);
     } else {
       updateUserProgress(userId, state.currentTopic, module.id, null, true);
       state.stage = STAGES.COMPLETED;
@@ -1795,8 +1821,9 @@ const handleQuiz = async (message) => {
     responseText += `\n\n${currentQ.explanation}`;
   }
   
-  await pacedReply(message, responseText);
-  
+  // No standalone feedback bubble: for non-final questions the feedback,
+  // separator and next question travel in ONE payload (was three). The last
+  // question keeps its feedback bubble because the completion image follows.
   state.currentQuizQuestion++;
   // FIX 3 — persist quiz position after every answer.
   if (usersDB[userId]) {
@@ -1809,13 +1836,12 @@ const handleQuiz = async (message) => {
   }
 
   if (state.currentQuizQuestion < module.questions.length) {
-    await pacedReply(message, "\n━━━━━━━━━━━━━━━━━━━━");
     const nextQ = module.questions[state.currentQuizQuestion];
-    await pacedReply(message, formatQuiz({
+    await pacedReply(message, `${responseText}\n\n━━━━━━━━━━━━━━━━━━━━\n\n${formatQuiz({
       q: nextQ.q,
       options: nextQ.options,
       total: module.questions.length
-    }, state.currentQuizQuestion + 1));
+    }, state.currentQuizQuestion + 1)}`);
   } else {
     const correct = correctSoFar;
     const total = totalQuestions;
@@ -1852,6 +1878,12 @@ const handleQuiz = async (message) => {
       finalMessage += `Reply *NEXT TOOL* to continue to the next AI tool.\n`;
       finalMessage += `Reply *MENU* to go back to the main menu.`;
     }
+
+    // Fold the final answer's feedback into the completion card caption when
+    // it fits (image captions cap at 1024 chars). One bubble instead of two.
+    const withFeedback = `${responseText}\n\n${finalMessage}`;
+    const completionCaption = withFeedback.length <= 1000 ? withFeedback : finalMessage;
+    if (completionCaption === finalMessage) await pacedReply(message, responseText);
     
     updateUserProgress(userId, state.currentTopic, module.id, null, true);
     
@@ -1875,15 +1907,15 @@ const handleQuiz = async (message) => {
     try {
       const mediaPath = completionFile ? path.join(MEDIA_DIR, completionFile) : null;
       if (mediaPath && fs.existsSync(mediaPath)) {
-        await sendImageFile(message, mediaPath, finalMessage);
+        await sendImageFile(message, mediaPath, completionCaption);
       } else {
         console.log(`Completion media missing at ${mediaPath}, sending text only`);
-        await pacedReply(message, finalMessage);
+        await pacedReply(message, completionCaption);
       }
     } catch (e) {
       console.log("Completion media send failed, sending text only:", e?.message || e);
       try {
-        await pacedReply(message, finalMessage);
+        await pacedReply(message, completionCaption);
       } catch {}
     }
 
@@ -1902,7 +1934,8 @@ const handleCompleted = async (message) => {
     const courseTopicId = state.currentTopic || usersDB[userId]?.lastTopic || "ai-tools";
     const courseTitle = getTopic(courseTopicId)?.title || "AI Tools for Teachers";
     try {
-      await pacedReply(message, `⏳ Generating your certificate for *${certName}*...`);
+      // No "⏳ Generating..." bubble: the PDF is built synchronously before
+      // the document send, so a separate progress message only costs money.
       const { filePath, certId } = await generateCertificatePDF(certName, { course: courseTitle });
       await sendDocumentFile(message, filePath, `🎓 *YOUR CERTIFICATE IS READY!*\n\nCongratulations *${certName}!* 🎉\n\nYou completed the *${courseTitle}* course.\nCertificate ID: ${certId}\n\n*Témí* says: Learn AI. Teach Better. 💛`, `${certName}-certificate.pdf`);
       if (!usersDB[userId].certificateRequests) {
@@ -1921,14 +1954,17 @@ const handleCompleted = async (message) => {
       saveData();
       state.awaitingCertConfirm = false;
       state.stage = STAGES.AWAITING_FEEDBACK;
-      await pacedReply(message, `Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲`);
-      await sendFeedbackPrompt(message);
+      // MENU/SHARE hint + feedback prompt are one bubble (was two).
+      await sendFeedbackPrompt(message, {
+        leadText: "Reply *MENU* for main menu 🏠\nReply *SHARE* to share with colleagues 📲",
+      });
     } catch (e) {
       console.error("Certificate generation failed:", e);
       state.awaitingCertConfirm = false;
       state.stage = STAGES.AWAITING_FEEDBACK;
-      await pacedReply(message, `✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`);
-      await sendFeedbackPrompt(message);
+      await sendFeedbackPrompt(message, {
+        leadText: `✅ *Certificate Request Saved!*\n\nName: ${certName}\n\nSorry, auto-generation failed — we will send it manually soon! 📧`,
+      });
     }
   };
 
@@ -2109,8 +2145,9 @@ const handleFeedback = async (message) => {
   }
   if (userInput === "skip" || userInput === "no" || userInput === "n") {
     state.stage = STAGES.MAIN_MENU;
-    await pacedReply(message, `No problem — thank you for completing the course! 🙏`);
-    await sendMainMenu(message);
+    await sendMainMenu(message, {
+      leadText: "No problem — thank you for completing the course! 🙏",
+    });
     return;
   }
   if (userInput.length === 0) {
@@ -2124,8 +2161,9 @@ const handleFeedback = async (message) => {
   usersDB[userId].feedback = { text: rawInput.slice(0, 1000), at: new Date().toISOString() };
   saveData();
   state.stage = STAGES.MAIN_MENU;
-  await pacedReply(message, `Thank you so much for your feedback! 🙏 It helps us make *Témí* better for teachers like you. 💛`);
-  await sendMainMenu(message);
+  await sendMainMenu(message, {
+    leadText: "Thank you so much for your feedback! 🙏 It helps us make *Témí* better for teachers like you. 💛",
+  });
 };
 
 // Dedupe: Meta may retry webhook deliveries — one user tap must never run

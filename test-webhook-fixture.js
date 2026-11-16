@@ -289,19 +289,13 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
     .getRegistration().terms.prompt.match(/https?:\/\/\S+/) || [])[0];
   assert.ok(termsUrl, "terms URL exists in content");
   const flowTermsSends = interactiveSendsTo(flow);
-  assert.strictEqual(flowTermsSends.length, 2, "terms step sends CTA then buttons");
-  const flowCta = flowTermsSends[0];
-  assert.strictEqual(flowCta.interactive.type, "cta_url");
-  assert.match(flowCta.interactive.body.text, /Before we go any further/);
-  assert.ok(!/https?:\/\//.test(flowCta.interactive.body.text), "CTA body must not contain a raw URL");
-  assert.deepStrictEqual(flowCta.interactive.action, {
-    name: "cta_url",
-    parameters: { display_text: "Read Terms", url: termsUrl },
-  });
-  const flowTerms = flowTermsSends[1];
+  assert.strictEqual(flowTermsSends.length, 1, "terms step sends ONE merged buttons bubble");
+  const flowTerms = flowTermsSends[0];
   assert.strictEqual(flowTerms.interactive.type, "button");
-  assert.strictEqual(flowTerms.interactive.body.text,
-    "Do you agree to our Terms and Conditions and Privacy Policy?");
+  assert.match(flowTerms.interactive.body.text, /Before we go any further/);
+  assert.ok(flowTerms.interactive.body.text.includes(termsUrl), "Terms URL travels in the body");
+  assert.match(flowTerms.interactive.body.text,
+    /Do you agree to our Terms and Conditions and Privacy Policy\?$/);
   assert.deepStrictEqual(
     flowTerms?.interactive?.action?.buttons?.map((b) => b.reply.title),
     ["Yes, I agree", "No, I do not agree"]
@@ -470,8 +464,8 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
   assert.strictEqual(bot.getUserState(termsFallback).welcomeStep, "await_terms");
   const fallbackSends = graphCalls.slice(fallbackStart)
     .filter((c) => c.body && c.body.to === termsFallback);
-  assert.strictEqual(fallbackSends.length, 2, "CTA attempt + text fallback only");
-  assert.strictEqual(fallbackSends[0].body.interactive.type, "cta_url");
+  assert.strictEqual(fallbackSends.length, 2, "buttons attempt + text fallback only");
+  assert.strictEqual(fallbackSends[0].body.interactive.type, "button");
   assert.strictEqual(fallbackSends[1].body.type, "text");
   assert.match(lastBodyTo(termsFallback) || "", /https?:\/\//);
   assert.match(lastBodyTo(termsFallback) || "", /1\. Yes, I agree\n2\. No, I do not agree/);
@@ -664,6 +658,74 @@ const textPayload = (from, bodyText, id = "wamid.text1") => ({
     assert.strictEqual(question.options[question.answer - 1], row.options[row.answer - 1],
       `${row.module} ${row.question} answer should point at the source option text`);
   }
+
+  // ---------------------------------------------------------------------
+  // Batching regressions: fewer billable bubbles, same information
+  // ---------------------------------------------------------------------
+
+  // 22) A quiz answer now delivers feedback + separator + next question in
+  //     ONE bubble (previously three separate Graph payloads).
+  const batchUser = "555000000032";
+  const batchState = bot.getUserState(batchUser);
+  batchState.stage = bot.STAGES.QUIZ;
+  batchState.currentTopic = "ai-tools";
+  batchState.currentModule = module1;
+  batchState.currentQuizQuestion = 0;
+  batchState.quizAnswers = [];
+  const batchBefore = graphCalls.filter((c) => c.body && c.body.to === batchUser).length;
+  await say(batchUser, "1");
+  const batchAfter = graphCalls.filter((c) => c.body && c.body.to === batchUser).length;
+  assert.strictEqual(batchAfter - batchBefore, 1, "quiz answer must be a single bubble");
+  assert.match(lastBodyTo(batchUser) || "", /Score: 1\/7/);
+  assert.match(lastBodyTo(batchUser) || "", /Question 2\/7/);
+
+  // 23) NEXT on a final quiz-invite slide starts the quiz instead of quietly
+  //     completing the module with no quiz score (which forced a paid retake).
+  const lpNextUser = "555000000033";
+  const lpNextState = bot.getUserState(lpNextUser);
+  lpNextState.stage = bot.STAGES.LEARNING;
+  lpNextState.currentTopic = "lesson-planning";
+  lpNextState.currentModule = lpMod1;
+  lpNextState.currentSlide = lpMod1.slides.length - 1;
+  lpNextState.quizAnswers = [];
+  await say(lpNextUser, "next");
+  assert.strictEqual(bot.getUserState(lpNextUser).stage, bot.STAGES.QUIZ,
+    "NEXT on the last Lesson Planning slide must start the quiz");
+  assert.match(lastBodyTo(lpNextUser) || "", /Question 1\/7/);
+
+  // 24) Lead-text merging keeps one bubble and stays within the body limit.
+  const leadMenuTo = "555000000034";
+  await bot.sendMainMenu({ from: leadMenuTo }, { leadText: "You're all set, Test Teacher! 🎉" });
+  const leadMenu = lastInteractiveTo(leadMenuTo);
+  assert.match(leadMenu.interactive.body.text, /You're all set, Test Teacher!/);
+  assert.match(leadMenu.interactive.body.text, /Learn AI\. Teach Better\./);
+  assert.ok(leadMenu.interactive.body.text.length <= bot.LIMITS.BODY);
+
+  const leadFbTo = "555000000035";
+  await bot.sendFeedbackPrompt({ from: leadFbTo }, { leadText: "Reply *MENU* for main menu 🏠" });
+  const leadFb = lastInteractiveTo(leadFbTo);
+  assert.match(leadFb.interactive.body.text, /Reply \*MENU\* for main menu/);
+  assert.match(leadFb.interactive.body.text, /how was your experience\?/);
+  assert.ok(leadFb.interactive.body.text.length <= bot.LIMITS.BODY);
+
+  // 25) The final answer's feedback rides in the completion card caption
+  //     (one bubble), not as a separate message.
+  const capUser = "555000000030";
+  const capState = bot.getUserState(capUser);
+  capState.stage = bot.STAGES.QUIZ;
+  capState.currentTopic = "ai-tools";
+  capState.currentModule = module1;
+  capState.currentQuizQuestion = module1.questions.length - 1;
+  capState.quizAnswers = new Array(module1.questions.length - 1).fill(true);
+  const capBefore = graphCalls.length;
+  await say(capUser, String(module1.questions[module1.questions.length - 1].answer));
+  const capSends = graphCalls.slice(capBefore).filter((c) => c.body && c.body.to === capUser);
+  assert.strictEqual(capSends.length, 1, "last answer + completion must be one bubble");
+  const capBody = capSends[0].body;
+  const capText = capBody.type === "image" ? capBody.image.caption : capBody.text.body;
+  assert.match(capText, /QUIZ COMPLETE/);
+  assert.match(capText, /Score: 7\/7/);
+  assert.ok(capText.length <= 1000, "completion caption must stay under the Meta limit");
 
   server.close();
   console.log("✅ webhook fixture: all assertions passed");
